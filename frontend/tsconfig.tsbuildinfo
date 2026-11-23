@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/types.ts","./src/components/pactdesk.tsx","./src/components/pactledger.tsx","./src/components/statusbadge.tsx","./src/components/studionetqueue.tsx","./src/lib/format.ts","./src/lib/studionet.ts","./src/lib/__tests__/format.test.ts"],"version":"5.6.3"}

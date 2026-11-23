@@ -1,0 +1,13 @@
+.secrets.local.json
+deploy/seed_state.json
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+.env
+.env.local
+.DS_Store

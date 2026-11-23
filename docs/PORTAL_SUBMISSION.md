@@ -91,8 +91,14 @@ https://explorer-studio.genlayer.com/address/0x34e7311ab0AC6884f30EbA0D328Fe523B
 
 ## 07. Project Links — Send people to it
 
-- **WEBSITE · REQUIRED:** *(Insert your Vercel URL once deployed, e.g. `https://release-pact.vercel.app`)*
-- **GITHUB:** *(Insert your GitHub repo URL once pushed, e.g. `https://github.com/Kanezar3/Release-Pact`)*
+- **WEBSITE · REQUIRED:**
+  ```text
+  https://release-pact.vercel.app
+  ```
+- **GITHUB:**
+  ```text
+  https://github.com/Kanezar3/Release-Pact
+  ```
 
 ---
 

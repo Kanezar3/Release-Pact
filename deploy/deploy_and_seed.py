@@ -1,14 +1,16 @@
-"""Resumable GenLayer StudioNet deployment & live proof seeder for Release Pact.
+"""Resumable GenLayer StudioNet deployment & live proof seeder for Release Pact v1.1.
 
-Deploys EvidenceProbe + ReleasePact, executes all live multi-tranche, Gate-1,
-Gate-2, adversarial prompt-injection, URL-allowlist, expiry-settlement, and
-EOA withdrawal transactions, and writes deploy/proof.json.
+Deploys EvidenceProbe + hardened ReleasePact (strict <owner>/<repo>/ prefix,
+anti-sponsor-self-griefing, per-builder attempt caps, min_release_date enforcement,
+quote-centered snippet excerpts, and finalization-gated EOA transfers), executes
+all live transactions to FINALIZED, and writes deploy/proof.json.
 """
 
 from __future__ import annotations
 
 import json
 import pathlib
+import subprocess
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -34,10 +36,6 @@ FLASK_URL = (
 REBUFF_URL = (
     "https://raw.githubusercontent.com/protectai/rebuff/"
     "4d2fe064abf164e7381556d23e48e210080f8afa/python-sdk/tests/test_sdk.py"
-)
-FORBIDDEN_URL = (
-    "https://raw.githubusercontent.com/kanezar3/fake-repo/"
-    "41cb747cd5a9b43da43bf809ad974722542603db/CHANGES.rst"
 )
 
 BROWSER_HEADERS = {
@@ -66,6 +64,16 @@ def rpc_call(method: str, params: list[Any]) -> Any:
 def get_eth_balance(address: str) -> int:
     raw = rpc_call("eth_getBalance", [address, "latest"])
     return int(raw, 16) if isinstance(raw, str) else int(raw)
+
+
+def get_git_head() -> str:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(ROOT), stderr=subprocess.DEVNULL
+        )
+        return out.decode("utf-8").strip()
+    except Exception:
+        return ""
 
 
 def load_or_create_accounts() -> tuple[Any, Any]:
@@ -136,12 +144,7 @@ def wait_finalized(client: Any, tx_hash: str, label: str) -> dict[str, Any]:
     return receipt
 
 
-def run_step(
-    state: dict[str, Any],
-    key: str,
-    label: str,
-    fn,
-) -> dict[str, Any]:
+def run_step(state: dict[str, Any], key: str, label: str, fn) -> dict[str, Any]:
     if key in state["steps"]:
         print(f"[skip] {key} ({label}) already finalized: {state['steps'][key]['tx_hash']}")
         return state["steps"][key]
@@ -184,7 +187,7 @@ def main() -> None:
         lambda: _do_probe(sponsor_client, probe_addr),
     )
 
-    # Stage 1: Deploy ReleasePact
+    # Stage 1: Deploy hardened ReleasePact
     if "release_pact" not in state["contracts"]:
         print("\n[deploy] ReleasePact ...")
         rp_code = (ROOT / "contracts" / "release_pact.py").read_text(encoding="utf-8")
@@ -199,11 +202,11 @@ def main() -> None:
     rp_addr = state["contracts"]["release_pact"]["address"]
     print(f"ReleasePact:   {rp_addr}")
 
-    # Pact 1: 2-Tranche Feature Release Pact (200 wei)
+    # Pact 1: 2-Tranche Feature Release Pact with min_release_date="2024-11-01" (200 wei)
     run_step(
         state,
         "create_pact_1",
-        "create_release_pact(pact-1: 2 tranches on pallets/flask, 200 wei)",
+        "create_release_pact(pact-1: 2 tranches on pallets/flask, min_release_date=2024-11-01, 200 wei)",
         lambda: _write_tx(
             sponsor_client,
             rp_addr,
@@ -218,9 +221,11 @@ def main() -> None:
                 ),
                 "https://raw.githubusercontent.com/pallets/flask/",
                 900,
+                "2024-11-01",
             ],
             value=200,
             label="create_pact_1",
+            entity_id="pact-1",
         ),
     )
 
@@ -236,6 +241,7 @@ def main() -> None:
             ["pact-1", 0, FLASK_URL, 70, 95],
             value=20,
             label="audit_1_tranche0_delivered",
+            entity_id="audit-1",
         ),
     )
 
@@ -251,6 +257,7 @@ def main() -> None:
             ["pact-1", 1, FLASK_URL, 44, 53],
             value=20,
             label="audit_2_tranche1_not_delivered",
+            entity_id="audit-2",
         ),
     )
 
@@ -266,6 +273,7 @@ def main() -> None:
             ["pact-1", 1, FLASK_URL, 70, 95],
             value=20,
             label="audit_3_tranche1_delivered",
+            entity_id="audit-3",
         ),
     )
 
@@ -287,17 +295,19 @@ def main() -> None:
                 ),
                 "https://raw.githubusercontent.com/pallets/flask/",
                 900,
+                "",
             ],
             value=100,
             label="create_pact_2_too_vague",
+            entity_id="pact-2",
         ),
     )
 
-    # Pact 3: Security, Retriable Fetch & Prompt-Injection Defense (100 wei)
+    # Pact 3: Strictly Repo-Scoped Security & Anti-Griefing Pact (100 wei)
     run_step(
         state,
         "create_pact_3_security",
-        "create_release_pact(pact-3: Flask 3.2.0 app.query, 100 wei)",
+        "create_release_pact(pact-3: Flask 3.2.0 app.query, strict pallets/flask prefix, 100 wei)",
         lambda: _write_tx(
             sponsor_client,
             rp_addr,
@@ -309,11 +319,13 @@ def main() -> None:
                         "Add the app.query route decorator for handling the HTTP QUERY method."
                     ]
                 ),
-                "https://raw.githubusercontent.com/",
+                "https://raw.githubusercontent.com/pallets/flask/",
                 900,
+                "2025-01-01",
             ],
             value=100,
             label="create_pact_3_security",
+            entity_id="pact-3",
         ),
     )
 
@@ -329,44 +341,89 @@ def main() -> None:
             ["pact-3", 0, FLASK_URL, 9000, 9020],
             value=20,
             label="audit_4_unverifiable_empty_slice",
+            entity_id="audit-4",
         ),
     )
 
-    # Audit 5: Prompt-Injection Defense (protectai/rebuff L1..L30)
+    # Audit 5: Cross-repo URL blocked by strict prefix (URL_OUTSIDE_ALLOWED_PREFIX)
     run_step(
         state,
-        "audit_5_adversarial_injection",
-        "submit_delivery_proof(pact-3, tranche 0, protectai/rebuff L1..L30 -> injection ignored)",
+        "audit_5_cross_repo_prefix_blocked",
+        "submit_delivery_proof(pact-3, tranche 0, protectai/rebuff URL -> URL_OUTSIDE_ALLOWED_PREFIX)",
         lambda: _write_tx(
             builder_client,
             rp_addr,
             "submit_delivery_proof",
             ["pact-3", 0, REBUFF_URL, 1, 30],
             value=20,
-            label="audit_5_adversarial_injection",
+            label="audit_5_cross_repo_prefix_blocked",
+            entity_id="audit-5",
         ),
     )
 
-    # Audit 6: Forbidden Self-Hosted URL (kanezar3 -> REJECTED_INVALID, zero revert, stake refunded)
+    # Audit 6: Sponsor self-griefing blocked cleanly (SPONSOR_CANNOT_SUBMIT_PROOF)
     run_step(
         state,
-        "audit_6_forbidden_url",
-        "submit_delivery_proof(pact-3, tranche 0, kanezar3 URL -> REJECTED_INVALID)",
+        "audit_6_sponsor_self_grief_blocked",
+        "submit_delivery_proof(pact-3, Sponsor self-submit -> SPONSOR_CANNOT_SUBMIT_PROOF)",
+        lambda: _write_tx(
+            sponsor_client,
+            rp_addr,
+            "submit_delivery_proof",
+            ["pact-3", 0, FLASK_URL, 1, 33],
+            value=20,
+            label="audit_6_sponsor_self_grief_blocked",
+            entity_id="audit-6",
+        ),
+    )
+
+    # Pact 4: Adversarial Prompt-Injection Defense scoped to protectai/rebuff (100 wei)
+    run_step(
+        state,
+        "create_pact_4_adversarial",
+        "create_release_pact(pact-4: ProtectAI Rebuff OTLP export, 100 wei)",
+        lambda: _write_tx(
+            sponsor_client,
+            rp_addr,
+            "create_release_pact",
+            [
+                "ProtectAI Rebuff SDK",
+                json.dumps(
+                    [
+                        "Implement native OpenTelemetry span export with OTLP gRPC transport in RebuffSdk."
+                    ]
+                ),
+                "https://raw.githubusercontent.com/protectai/rebuff/",
+                900,
+                "",
+            ],
+            value=100,
+            label="create_pact_4_adversarial",
+            entity_id="pact-4",
+        ),
+    )
+
+    # Audit 7: Prompt-injection fixture inside <untrusted_evidence> ignored
+    run_step(
+        state,
+        "audit_7_adversarial_injection",
+        "submit_delivery_proof(pact-4, tranche 0, protectai/rebuff L1..L30 -> injection ignored)",
         lambda: _write_tx(
             builder_client,
             rp_addr,
             "submit_delivery_proof",
-            ["pact-3", 0, FORBIDDEN_URL, 1, 10],
+            ["pact-4", 0, REBUFF_URL, 1, 30],
             value=20,
-            label="audit_6_forbidden_url",
+            label="audit_7_adversarial_injection",
+            entity_id="audit-7",
         ),
     )
 
-    # Pact 4: Short-Window Expiry Settlement (timeout_seconds=15)
+    # Pact 5: Short-Window Expiry Settlement (timeout_seconds=15)
     run_step(
         state,
-        "create_pact_4_expiry",
-        "create_release_pact(pact-4: timeout_seconds=15, 100 wei)",
+        "create_pact_5_expiry",
+        "create_release_pact(pact-5: timeout_seconds=15, 100 wei)",
         lambda: _write_tx(
             sponsor_client,
             rp_addr,
@@ -380,31 +437,34 @@ def main() -> None:
                 ),
                 "https://raw.githubusercontent.com/pallets/flask/",
                 15,
+                "",
             ],
             value=100,
-            label="create_pact_4_expiry",
+            label="create_pact_5_expiry",
+            entity_id="pact-5",
         ),
     )
 
-    if "settle_pact_4_expired" not in state["steps"]:
-        print("  [wait] Sleeping 22s so pact-4 passes its 15s trusted-clock deadline...")
+    if "settle_pact_5_expired" not in state["steps"]:
+        print("  [wait] Sleeping 22s so pact-5 passes its 15s trusted-clock deadline...")
         time.sleep(22)
 
     run_step(
         state,
-        "settle_pact_4_expired",
-        "settle_expired_pact(pact-4 -> EXPIRED_SETTLED)",
+        "settle_pact_5_expired",
+        "settle_expired_pact(pact-5 -> EXPIRED_SETTLED)",
         lambda: _write_tx(
             sponsor_client,
             rp_addr,
             "settle_expired_pact",
-            ["pact-4"],
+            ["pact-5"],
             value=0,
-            label="settle_pact_4_expired",
+            label="settle_pact_5_expired",
+            entity_id="pact-5-settle",
         ),
     )
 
-    # Real EOA native withdrawals
+    # Real EOA native withdrawals (chain-layer emit_transfer executed on finalization)
     run_step(
         state,
         "withdraw_sponsor",
@@ -450,6 +510,8 @@ def main() -> None:
 
     proof = {
         "project": "Release Pact",
+        "version": "1.1.0",
+        "source_commit": get_git_head(),
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "network": {
             "name": "GenLayer StudioNet",
@@ -503,7 +565,10 @@ def _do_probe(client: Any, probe_addr: str) -> dict[str, Any]:
         value=0,
     )
     receipt = wait_finalized(client, tx_hash, "probe_flask_310")
-    return extract_tx_meta(receipt, tx_hash)
+    meta = extract_tx_meta(receipt, tx_hash)
+    meta["function"] = "probe_url_slice"
+    meta["entity_id"] = "probe-1"
+    return meta
 
 
 def _write_tx(
@@ -513,6 +578,7 @@ def _write_tx(
     args: list[Any],
     value: int,
     label: str,
+    entity_id: str,
 ) -> dict[str, Any]:
     tx_hash = client.write_contract(
         address=address,
@@ -524,6 +590,7 @@ def _write_tx(
     meta = extract_tx_meta(receipt, tx_hash)
     meta["function"] = function_name
     meta["value_wei"] = value
+    meta["entity_id"] = entity_id
     return meta
 
 
@@ -557,6 +624,7 @@ def _do_withdraw(
     meta.update(
         {
             "function": "withdraw_refundable",
+            "entity_id": f"withdraw-{role}",
             "account": account_addr,
             "withdrawn_wei": pending_before - pending_after,
             "refundable_before_wei": pending_before,

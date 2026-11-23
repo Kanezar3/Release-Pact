@@ -9,12 +9,26 @@ export const STUDIONET_EXPLORER_BASE = 'https://explorer-studio.genlayer.com';
 
 const READ_ONLY_ACCOUNT = createAccount();
 
-export function createReadClient() {
-  return createClient({
+type Eip1193Provider = {
+  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+};
+
+function getInjectedProvider(): Eip1193Provider | undefined {
+  return (window as unknown as { ethereum?: Eip1193Provider }).ethereum;
+}
+
+async function createInitializedClient(options?: {
+  account?: string | ReturnType<typeof createAccount>;
+  provider?: Eip1193Provider;
+}) {
+  const client = createClient({
     chain: studionet,
     endpoint: STUDIONET_RPC_URL,
-    account: READ_ONLY_ACCOUNT,
+    account: (options?.account ?? READ_ONLY_ACCOUNT) as `0x${string}`,
+    ...(options?.provider ? { provider: options.provider as never } : {}),
   });
+  await client.initializeConsensusSmartContract();
+  return client;
 }
 
 export interface LiveStudioNetSnapshot {
@@ -27,7 +41,7 @@ export interface LiveStudioNetSnapshot {
 export async function fetchLiveStudioNetState(
   contractAddress: string
 ): Promise<LiveStudioNetSnapshot> {
-  const client = createReadClient();
+  const client = await createInitializedClient();
   const [configRaw, pactsRaw, auditsRaw] = await Promise.all([
     client.readContract({
       address: contractAddress as `0x${string}`,
@@ -58,7 +72,7 @@ export async function fetchRefundableBalance(
   contractAddress: string,
   account: string
 ): Promise<number> {
-  const client = createReadClient();
+  const client = await createInitializedClient();
   const raw = await client.readContract({
     address: contractAddress as `0x${string}`,
     functionName: 'get_refundable_balance',
@@ -90,7 +104,7 @@ export async function fetchTxStatus(txHash: string): Promise<TxRpcStatus> {
   const payload = await res.json();
   const tx = payload?.result;
   if (!tx) {
-    return { status: 'PENDING', resultName: '', executionResult: '' };
+    return { status: 'SUBMITTED', resultName: '', executionResult: '' };
   }
   const leader = tx?.consensus_data?.leader_receipt?.[0];
   return {
@@ -101,7 +115,7 @@ export async function fetchTxStatus(txHash: string): Promise<TxRpcStatus> {
 }
 
 export async function ensureStudioNetWallet(): Promise<string> {
-  const eth = (window as unknown as { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
+  const eth = getInjectedProvider();
   if (!eth) {
     throw new Error('MetaMask (or an EIP-1193 wallet) was not detected in this browser.');
   }
@@ -146,10 +160,15 @@ export async function writeStudioNetContract(params: {
   args: unknown[];
   valueWei?: bigint;
 }): Promise<string> {
-  const client = createClient({
-    chain: studionet,
-    endpoint: STUDIONET_RPC_URL,
-    account: params.account as `0x${string}`,
+  const eth = getInjectedProvider();
+  if (!eth) {
+    throw new Error('MetaMask (or an EIP-1193 wallet) was not detected in this browser.');
+  }
+
+  // Always await consensus main contract discovery before signing a write tx
+  const client = await createInitializedClient({
+    account: params.account,
+    provider: eth,
   });
 
   const txHash = await client.writeContract({

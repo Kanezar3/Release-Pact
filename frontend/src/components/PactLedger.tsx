@@ -6,12 +6,21 @@ import {
   Lock,
   ShieldCheck,
   ShieldAlert,
-  Unlock,
   Clock,
   Hash,
+  ArrowRight,
+  Calendar,
 } from 'lucide-react';
-import type { AuditRecord, PactRecord, ProofManifest } from '../types';
-import { formatUtc, formatWei, sha256Hex, shortAddr, shortHash, sliceSnippet } from '../lib/format';
+import type { AuditRecord, PactRecord, ProofManifest, TxMeta } from '../types';
+import {
+  formatUtc,
+  formatWei,
+  sha256Hex,
+  shortAddr,
+  shortHash,
+  sliceSnippet,
+  splitExcerptWithQuote,
+} from '../lib/format';
 import { StatusBadge } from './StatusBadge';
 
 interface PactLedgerProps {
@@ -29,6 +38,16 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
     computed?: string;
     message?: string;
   }>({ state: 'idle' });
+
+  const txByEntity = useMemo(() => {
+    const map: Record<string, TxMeta> = {};
+    for (const meta of Object.values(proof.transactions)) {
+      if (meta.entity_id) {
+        map[meta.entity_id] = meta;
+      }
+    }
+    return map;
+  }, [proof.transactions]);
 
   const selectedPact = useMemo(
     () => pacts.find((p) => p.pact_id === selectedPactId) ?? pacts[0],
@@ -100,8 +119,61 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
     [pacts]
   );
 
+  const sponsorWithdrawTx = proof.transactions.withdraw_sponsor;
+  const builderWithdrawTx = proof.transactions.withdraw_builder;
+  const postBalances = proof.on_chain_state.post_withdraw_refundable_balances;
+
+  const selectedPactCreateTx = selectedPact ? txByEntity[selectedPact.pact_id] : undefined;
+  const selectedPactSettleTx = selectedPact
+    ? txByEntity[`${selectedPact.pact_id}-settle`]
+    : undefined;
+  const selectedAuditTx = selectedAudit ? txByEntity[selectedAudit.audit_id] : undefined;
+
+  const highlightedExcerpt = useMemo(
+    () =>
+      selectedAudit
+        ? splitExcerptWithQuote(selectedAudit.snippet_excerpt, selectedAudit.quote)
+        : null,
+    [selectedAudit]
+  );
+
+  const maxPerBuilder = proof.on_chain_state.config.max_attempts_per_builder ?? 3;
+  const maxTotalAttempts =
+    proof.on_chain_state.config.max_total_audits_per_tranche ??
+    proof.on_chain_state.config.max_audit_attempts ??
+    15;
+
   return (
     <div className="space-y-6">
+      {/* Explicit Recorded Proof vs. Live RPC Banner */}
+      <div
+        className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-4 py-2.5 text-xs ${
+          isLiveSynced
+            ? 'border-[#A7F3D0] bg-[#ECFDF5] text-[#047857]'
+            : 'border-[#E4E4E0] bg-white text-[#525860]'
+        }`}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={`h-2 w-2 rounded-full ${isLiveSynced ? 'bg-[#047857]' : 'bg-[#3730A3]'}`}
+          />
+          <strong className="font-mono uppercase tracking-wider">
+            {isLiveSynced ? 'Live StudioNet RPC Read' : 'Recorded Proof Snapshot (proof.json)'}
+          </strong>
+          <span className="hidden text-[#6E747C] sm:inline">·</span>
+          <span>
+            {isLiveSynced
+              ? 'State freshly read from GenLayer StudioNet RPC (Chain 61999).'
+              : 'Showing verified finalized manifest. Click "Verify Live RPC" in the header to query live chain state.'}
+          </span>
+        </div>
+        {proof.source_commit && (
+          <span className="font-mono text-[11px] text-[#6E747C]">
+            commit {proof.source_commit.slice(0, 7)}
+          </span>
+        )}
+      </div>
+
       {/* Compact Metric Strip */}
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <div className="ledger-sheet rounded-lg p-4">
@@ -152,6 +224,68 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
         </div>
       </section>
 
+      {/* Real EOA Finalization-Gated Settlement Ledger */}
+      {(sponsorWithdrawTx || builderWithdrawTx) && (
+        <section className="ledger-sheet rounded-lg p-4 sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#EFEFEC] pb-3">
+            <div>
+              <h2 className="font-display text-sm font-semibold text-[#111315]">
+                Finalized EOA Native Transfers (Chain-Layer Settlement Proof)
+              </h2>
+              <p className="mt-0.5 text-xs text-[#525860]">
+                Dispatched via <code className="font-mono">@gl.evm.contract_interface</code>{' '}
+                <code className="font-mono">emit_transfer</code> — executed strictly upon GenLayer
+                finalization after the native appeal window.
+              </p>
+            </div>
+            <span className="rounded-full border border-[#A7F3D0] bg-[#ECFDF5] px-2.5 py-0.5 font-mono text-[11px] font-medium text-[#047857]">
+              Post-Withdraw Ledger: {postBalances.sponsor_wei} / {postBalances.builder_wei} wei
+            </span>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+            {[
+              { role: 'Sponsor EOA', tx: sponsorWithdrawTx },
+              { role: 'Builder EOA', tx: builderWithdrawTx },
+            ].map(
+              ({ role, tx }) =>
+                tx && (
+                  <div
+                    key={role}
+                    className="ledger-sheet-muted flex flex-wrap items-center justify-between gap-3 rounded-md p-3 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-[#111315]">{role}</span>
+                        <span className="font-mono text-[11px] text-[#6E747C]">
+                          {shortAddr(tx.account)}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center gap-1.5 font-mono text-xs text-[#047857]">
+                        <span>{tx.eoa_balance_before_wei ?? '0'} wei</span>
+                        <ArrowRight className="h-3 w-3" />
+                        <strong>{tx.eoa_balance_after_wei ?? tx.withdrawn_wei} wei</strong>
+                        <span className="text-[#6E747C]">
+                          (+{tx.withdrawn_wei} wei withdrawn)
+                        </span>
+                      </div>
+                    </div>
+                    <a
+                      href={tx.explorer_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 rounded border border-[#E4E4E0] bg-white px-2.5 py-1 font-mono text-[11px] text-[#3730A3] hover:border-[#3730A3]"
+                    >
+                      {shortHash(tx.tx_hash, 8, 4)}
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+                )
+            )}
+          </div>
+        </section>
+      )}
+
       {/* Master-Detail Ledger Grid */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         {/* Left Column: Pact Index */}
@@ -194,7 +328,10 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
                   <div className="mt-2 font-display text-base font-semibold text-[#111315]">
                     {pact.project_name}
                   </div>
-                  <div className="mt-1 truncate font-mono text-[11px] text-[#6E747C]">
+                  <div
+                    className="mt-1 truncate font-mono text-[11px] text-[#6E747C]"
+                    title={pact.allowed_source_prefix}
+                  >
                     {pact.allowed_source_prefix}
                   </div>
 
@@ -231,7 +368,9 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
 
                   <div className="mt-3 flex items-center justify-between border-t border-[#F0F0EC] pt-2.5 text-[11px] text-[#6E747C]">
                     <span>Sponsor {shortAddr(pact.sponsor)}</span>
-                    <span className="font-mono">{auditsCount} audit{auditsCount === 1 ? '' : 's'}</span>
+                    <span className="font-mono">
+                      {auditsCount} audit{auditsCount === 1 ? '' : 's'}
+                    </span>
                   </div>
                 </button>
               );
@@ -245,7 +384,7 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
             <section className="ledger-sheet rounded-lg p-5 sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#EFEFEC] pb-4">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="font-mono text-xs font-semibold uppercase tracking-wider text-[#3730A3]">
                       {selectedPact.pact_id}
                     </span>
@@ -253,6 +392,28 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
                     <span className="font-mono text-xs text-[#6E747C]">
                       {selectedPact.reason}
                     </span>
+                    {selectedPactCreateTx && (
+                      <a
+                        href={selectedPactCreateTx.explorer_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 rounded border border-[#E4E4E0] bg-[#FAFAF8] px-2 py-0.5 font-mono text-[10px] text-[#3730A3] hover:border-[#3730A3]"
+                      >
+                        Create Tx {shortHash(selectedPactCreateTx.tx_hash, 6, 4)}
+                        <ExternalLink className="h-2.5 w-2.5" />
+                      </a>
+                    )}
+                    {selectedPactSettleTx && (
+                      <a
+                        href={selectedPactSettleTx.explorer_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 rounded border border-[#FDE68A] bg-[#FFFBEB] px-2 py-0.5 font-mono text-[10px] text-[#B45309] hover:border-[#B45309]"
+                      >
+                        Settle Tx {shortHash(selectedPactSettleTx.tx_hash, 6, 4)}
+                        <ExternalLink className="h-2.5 w-2.5" />
+                      </a>
+                    )}
                   </div>
                   <h2 className="mt-1 font-display text-xl font-semibold text-[#111315]">
                     {selectedPact.project_name}
@@ -273,11 +434,24 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
                     {formatWei(selectedPact.refunded_wei)}
                   </div>
                 </div>
-                <div className="ledger-sheet-muted rounded-md p-3">
-                  <div className="text-[11px] text-[#6E747C]">Bound Source Prefix</div>
-                  <div className="mt-1 break-all font-mono text-[11px] font-medium text-[#111315]">
-                    {selectedPact.allowed_source_prefix}
+                <div className="ledger-sheet-muted min-w-0 rounded-md p-3">
+                  <div className="text-[11px] text-[#6E747C]">Bound Canonical Prefix</div>
+                  <div
+                    className="mt-1 truncate font-mono text-[11px] font-medium text-[#111315]"
+                    title={selectedPact.allowed_source_prefix}
+                  >
+                    {selectedPact.allowed_source_prefix.replace(/^https:\/\//, '')}
                   </div>
+                  {selectedPact.min_release_date ? (
+                    <div className="mt-1 inline-flex items-center gap-1 font-mono text-[10px] text-[#3730A3]">
+                      <Calendar className="h-3 w-3" />
+                      Min release: {selectedPact.min_release_date}
+                    </div>
+                  ) : (
+                    <div className="mt-1 font-mono text-[10px] text-[#6E747C]">
+                      Repo-scoped prefix
+                    </div>
+                  )}
                 </div>
                 <div className="ledger-sheet-muted rounded-md p-3">
                   <div className="text-[11px] text-[#6E747C]">Trusted Clock Window</div>
@@ -333,7 +507,7 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
                               {unlocked ? (
-                                <Unlock className="h-4 w-4 text-[#047857]" />
+                                <CheckCircle2 className="h-4 w-4 text-[#047857]" />
                               ) : expired ? (
                                 <Clock className="h-4 w-4 text-[#B45309]" />
                               ) : (
@@ -352,7 +526,10 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
                             {tr.criterion}
                           </p>
                           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-[#6E747C]">
-                            <span>Attempts: {tr.audit_attempts}/5</span>
+                            <span>
+                              Audits: {tr.audit_attempts}/{maxTotalAttempts} (max {maxPerBuilder}
+                              /builder)
+                            </span>
                             {tr.winning_audit_id && (
                               <span className="text-[#047857]">
                                 Unlocked by {tr.winning_audit_id} · Builder {shortAddr(tr.builder)}
@@ -377,7 +554,8 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
                     Gate-2 Forensic Audit Trail
                   </h3>
                   <p className="mt-0.5 text-xs text-[#525860]">
-                    Commit-pinned external changelog excerpts verified under GenLayer Optimistic Democracy.
+                    Commit-pinned external changelog excerpts verified under GenLayer Optimistic
+                    Democracy.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
@@ -408,6 +586,17 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
                     <span className="rounded bg-[#F3F3EF] px-2 py-0.5 font-mono text-[11px] text-[#525860]">
                       {selectedAudit.reason}
                     </span>
+                    {selectedAuditTx && (
+                      <a
+                        href={selectedAuditTx.explorer_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 rounded border border-[#E4E4E0] bg-white px-2 py-0.5 font-mono text-[11px] text-[#3730A3] hover:border-[#3730A3]"
+                      >
+                        Explorer Tx {shortHash(selectedAuditTx.tx_hash, 6, 4)}
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
                   </div>
                   <div className="font-mono text-xs text-[#525860]">
                     Payout:{' '}
@@ -437,7 +626,7 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
                 )}
 
                 {/* Evidence URL + Line Slice + WebCrypto SHA-256 Verifier */}
-                <div className="ledger-sheet-muted rounded-md p-3.5 space-y-3">
+                <div className="ledger-sheet-muted space-y-3 rounded-md p-3.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 font-mono text-xs font-medium text-[#111315]">
                       <FileCode2 className="h-4 w-4 text-[#525860]" />
@@ -469,7 +658,10 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
                       <div className="flex items-center gap-1.5 font-mono text-[11px] text-[#525860]">
                         <Hash className="h-3.5 w-3.5 shrink-0 text-[#6E747C]" />
                         <span className="break-all">
-                          snippet_sha256: <strong className="text-[#111315]">{shortHash(selectedAudit.snippet_sha256, 16, 10)}</strong>
+                          snippet_sha256:{' '}
+                          <strong className="text-[#111315]">
+                            {shortHash(selectedAudit.snippet_sha256, 16, 10)}
+                          </strong>
                         </span>
                       </div>
 
@@ -505,8 +697,18 @@ export function PactLedger({ pacts, audits, proof, isLiveSynced }: PactLedgerPro
                   )}
 
                   {selectedAudit.snippet_excerpt && (
-                    <pre className="max-h-52 overflow-auto rounded border border-[#E4E4E0] bg-white p-3 font-mono text-[11px] leading-relaxed text-[#2C3036] whitespace-pre-wrap">
-                      {selectedAudit.snippet_excerpt}
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded border border-[#E4E4E0] bg-white p-3 font-mono text-[11px] leading-relaxed text-[#2C3036]">
+                      {highlightedExcerpt ? (
+                        <>
+                          {highlightedExcerpt.before}
+                          <mark className="rounded bg-[#D1FAE5] px-0.5 text-[#064E3B]">
+                            {highlightedExcerpt.match}
+                          </mark>
+                          {highlightedExcerpt.after}
+                        </>
+                      ) : (
+                        selectedAudit.snippet_excerpt
+                      )}
                     </pre>
                   )}
                 </div>

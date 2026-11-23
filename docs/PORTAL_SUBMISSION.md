@@ -6,7 +6,7 @@ Copy-paste ready submission sheet for `portal.genlayer.foundation/submit-contrib
 
 ## 01. Identity — Make it recognizable
 
-- **Project Logo (`1024 × 1024 px` PNG · `991.4 KB` · `< 2 MB`):** `logo.png` (and `frontend/public/logo.png`)
+- **Project Logo (`1024 × 1024 px` PNG · `991.4 KB` · `< 2 MB`):** `logo.png` (and `https://release-pact.vercel.app/logo.png`)
 - **Project Name:**
   ```text
   Release Pact
@@ -25,15 +25,15 @@ Multi-tranche open-source feature-release escrow unlocking milestone GEN payouts
 
 ---
 
-## 03. Project Overview — Description (`868 / 1000` chars)
+## 03. Project Overview — Description (`928 / 1000` CRLF chars)
 
 ```text
-Release Pact is a multi-tranche open-source feature-release escrow built on GenLayer StudioNet. Sponsors lock GEN across 1-3 ordered software deliverables bound to an immutable external repository prefix (e.g. pallets/flask) and a trusted-clock deadline.
+Release Pact is a multi-tranche open-source feature-release escrow built on GenLayer StudioNet. Sponsors lock GEN across 1-3 ordered software deliverables bound to a repo-scoped external prefix (e.g. raw.githubusercontent.com/pallets/flask/), an optional min_release_date, and a trusted-clock deadline.
 
 "The model judges; plain Python moves money."
-- Gate 1 (Clarity Screening): Validators screen deliverables before lock, rejecting subjective goals (TOO_VAGUE) with immediate zero-revert deposit refunds.
-- Gate 2 (Forensic Proof): Builders submit commit-pinned raw changelog line slices. Validators independently re-fetch, verify identical SHA-256 snippet digests and >=12-char verbatim quotes in Python, and ignore embedded prompt injections.
-- Deterministic Accounting: FEATURE_DELIVERED unlocks each tranche proportionally; non-conclusive audits keep tranches OPEN for retries; settle_expired_pact and withdraw_refundable execute real EOA native transfers.
+- Gate 1 (Clarity Screening): Validators reject vague goals (TOO_VAGUE) with immediate zero-revert deposit refunds.
+- Gate 2 (Forensic Proof): Non-sponsor builders submit commit-pinned raw changelog line slices. Validators independently re-fetch, verify identical SHA-256 digests and >=12-char verbatim quotes inside the snippet, and ignore prompt injections.
+- Deterministic Accounting: FEATURE_DELIVERED unlocks tranches proportionally; per-builder caps prevent griefing; settle_expired_pact and withdraw_refundable execute chain-layer EOA transfers on finalization.
 ```
 
 ---
@@ -46,45 +46,45 @@ Leave blank unless attaching a YouTube or X walkthrough link.
 ## 05. How-To — Write the exact path
 
 - **Step `01`**
-  - **Optional Heading:** `Inspect Finalized Multi-Tranche Pacts`
+  - **Optional Heading:** `Verify Live StudioNet RPC & EOA Transfers`
   - **Instruction:**
     ```text
-    Open the live web app (no wallet required). In "01 · Pact Ledger", browse all 4 finalized StudioNet pacts (pact-1 through pact-4) and click "Verify Live RPC" in the top bar to confirm live RPC parity against contract 0x34e7311ab0AC6884f30EbA0D328Fe523B3C1a15a on Chain ID 61999.
+    Open https://release-pact.vercel.app (no wallet required). In "01 · Pact Ledger", review the Recorded Proof banner and Finalized EOA Native Transfers card (Sponsor 0 -> 260 wei, Builder 0 -> 280 wei), then click "Verify Live RPC" in the header to confirm live parity (5 pacts, 7 audits) against contract 0x2bc81019DF2A0Ef3d238AC9ae9679059c90d20C0 on Chain ID 61999.
     ```
 
 - **Step `02`**
-  - **Optional Heading:** `Verify SHA-256 & Retry Mechanics`
+  - **Optional Heading:** `Verify SHA-256, Inline Quotes & Retry Flow`
   - **Instruction:**
     ```text
-    Select "pact-1" (Pallets Flask 3.1.x, FULLY_DELIVERED) to inspect both unlocked tranches. Click "audit-1 · T0" (FEATURE_DELIVERED), "audit-2 · T1" (NOT_DELIVERED on Flask 3.1.2, leaving T1 OPEN), and "audit-3 · T1" (retry FEATURE_DELIVERED). Click "Verify SHA-256 in Browser" to recompute WebCrypto SHA-256 parity with on-chain snippet_sha256.
+    Select "pact-1" (Pallets Flask 3.1.x, FULLY DELIVERED) to inspect both unlocked tranches. Click "audit-1 · T0" (FEATURE_DELIVERED), "audit-2 · T1" (NOT_DELIVERED on Flask 3.1.2, leaving T1 OPEN), and "audit-3 · T1" (retry FEATURE_DELIVERED). Inspect the highlighted verbatim quote inside the excerpt and click "Verify SHA-256 in Browser" for exact WebCrypto parity with on-chain snippet_sha256.
     ```
 
 - **Step `03`**
   - **Optional Heading:** `Inspect Gate-1, Security & Expiry Proofs`
   - **Instruction:**
     ```text
-    Click "pact-2" (TOO_VAGUE immediate refund), "pact-3" (audit-4 UNVERIFIABLE_FETCH empty slice, audit-5 protectai/rebuff prompt-injection defense, audit-6 FORBIDDEN_EVIDENCE_URL zero-revert refund), and "pact-4" (EXPIRED_SETTLED trusted-clock refund).
+    Browse "pact-2" (TOO_VAGUE immediate refund), "pact-3" (audit-4 UNVERIFIABLE_FETCH, audit-5 cross-repo URL_OUTSIDE_ALLOWED_PREFIX, audit-6 SPONSOR_CANNOT_SUBMIT_PROOF anti-griefing), "pact-4" (audit-7 protectai/rebuff prompt-injection defense), and "pact-5" (EXPIRED_SETTLED trusted-clock refund) with per-item Explorer Tx links.
     ```
 
 - **Step `04`**
-  - **Optional Heading:** `Execute Live Writes & Track Consensus`
+  - **Optional Heading:** `Connect Wallet & Inspect Appeal Window Queue`
   - **Instruction:**
     ```text
-    Switch to "02 · Pact Desk" and click "Connect Wallet" for MetaMask on StudioNet (Chain 61999) to test 1-click presets ("Flask 3.2 Preset", "Too-Vague Preset", "Flask 3.2 Proof Preset") or "Withdraw Refundable". Open "03 · StudioNet Queue" and click "Load 16 Finalized Proof Txs" to inspect the 5-stage Optimistic Democracy pipeline and StudioNet Explorer links.
+    Switch to "02 · Pact Desk" and click "Connect Wallet" for MetaMask on StudioNet (Chain 61999) to test 1-click presets ("Flask 3.2 Preset", "Too-Vague Preset", "Flask 3.2 Proof Preset") or "Withdraw Refundable". Open "03 · StudioNet Queue" and click "Load 18 Finalized Proof Txs" to inspect the 5-stage pipeline (including Accepted / Appeal Window and Finalized Success/Error states).
     ```
 
 ---
 
 ## 06. Review Verification — Prove the path works
 
-### Expected Verification Outcome (`373 / 500` chars)
+### Expected Verification Outcome (`389 / 500` chars)
 ```text
-In 01 · Pact Ledger, all 4 pacts and 6 audits load with live RPC parity when clicking Verify Live RPC (contract 0x34e7311ab0AC6884f30EbA0D328Fe523B3C1a15a), Verify SHA-256 in Browser confirms exact WebCrypto snippet_sha256 parity on audit-1 and audit-3, and 03 · StudioNet Queue loads all 16 FINALIZED / MAJORITY_AGREE / SUCCESS StudioNet Explorer transactions.
+In 01 · Pact Ledger, clicking Verify Live RPC switches to Live StudioNet RPC Read (5 pacts, 7 audits) on contract 0x2bc81019DF2A0Ef3d238AC9ae9679059c90d20C0, Verify SHA-256 in Browser confirms exact WebCrypto snippet_sha256 parity with inline highlighted quotes on audit-1 and audit-3, and 03 · StudioNet Queue loads all 18 FINALIZED / MAJORITY_AGREE / SUCCESS StudioNet Explorer txs.
 ```
 
 ### Contract Link 1 *(Optional)*
 ```text
-https://explorer-studio.genlayer.com/address/0x34e7311ab0AC6884f30EbA0D328Fe523B3C1a15a
+https://explorer-studio.genlayer.com/address/0x2bc81019DF2A0Ef3d238AC9ae9679059c90d20C0
 ```
 
 ---
@@ -104,8 +104,11 @@ https://explorer-studio.genlayer.com/address/0x34e7311ab0AC6884f30EbA0D328Fe523B
 
 ## Evidence & Supporting Information
 
-- **ReleasePact Contract (`0x34e7...a15a`):** `https://explorer-studio.genlayer.com/address/0x34e7311ab0AC6884f30EbA0D328Fe523B3C1a15a`
-- **EvidenceProbe Contract (`0x16d0...1b66`):** `https://explorer-studio.genlayer.com/address/0x16d0630E19DaCcA37E2d0056B74Dc15cB2aF1b66`
-- **Deploy ReleasePact Tx:** `https://explorer-studio.genlayer.com/tx/0xf90a68b8d73dd0236797b266a1b1a7cab04b829efb2e2d9d49d89386bfa9a668`
-- **Sponsor EOA Withdrawal (`0 -> 240 wei`):** `https://explorer-studio.genlayer.com/tx/0x75aa4cfbfce232721e54a4aaadc8e782f0c1f4dc87cca8ce3eb9d36063664e92`
-- **Builder EOA Withdrawal (`0 -> 280 wei`):** `https://explorer-studio.genlayer.com/tx/0xd10f2660dc384ff16343f723f3fd4670d4adc5d077e55d6fc564595cf11d1535`
+- **GitHub Repository:** `https://github.com/Kanezar3/Release-Pact`
+- **Live Web App (Vercel):** `https://release-pact.vercel.app`
+- **ReleasePact v1.1 Contract (`0x2bc8...20C0`):** `https://explorer-studio.genlayer.com/address/0x2bc81019DF2A0Ef3d238AC9ae9679059c90d20C0`
+- **EvidenceProbe Contract (`0x3261...084B`):** `https://explorer-studio.genlayer.com/address/0x3261f64fd4EAf570cB9AAb559a28A6F8BF27084B`
+- **Deploy ReleasePact Tx:** `https://explorer-studio.genlayer.com/tx/0x07fc577bd8da3f88c8263e02b4daf74f58d129d028cbd9bb49fb16a086c77597`
+- **Sponsor EOA Withdrawal (`0 -> 260 wei`):** `https://explorer-studio.genlayer.com/tx/0x113c09e43f21736ac6230ea080fd0ce7c66e313e7079f39ae86a30186b3fb8ef`
+- **Builder EOA Withdrawal (`0 -> 280 wei`):** `https://explorer-studio.genlayer.com/tx/0xca6dbf3393f72b8e463721f20dfa6d6145e9ce002ba840b2d445344f3e0a224c`
+- **On-Chain Proof Manifest (`deploy/proof.json`):** `https://github.com/Kanezar3/Release-Pact/blob/main/deploy/proof.json`

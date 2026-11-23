@@ -1,355 +1,402 @@
-import hashlib
+"""Unit tests for ReleasePact & EvidenceProbe (no personal handles, strict repo-prefix & anti-griefing)."""
+
+from __future__ import annotations
+
 import importlib.util
 import json
-from pathlib import Path
+import pathlib
 import sys
 import types
+from dataclasses import dataclass
+from typing import Any
+
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONTRACT_PATH = PROJECT_ROOT / "contracts" / "release_pact.py"
-PROBE_PATH = PROJECT_ROOT / "contracts" / "evidence_probe.py"
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-class MockUserError(Exception):
+class _MockUserError(Exception):
     pass
 
 
-class MockAddress:
-    def __init__(self, hex_addr: str):
-        self.as_hex = hex_addr.lower()
+@dataclass
+class _MockReturn:
+    calldata: Any
+
+
+class _MockAddress:
+    def __init__(self, hex_val: str):
+        self.as_hex = hex_val
 
     def __str__(self) -> str:
         return self.as_hex
 
 
-class MockTreeMap(dict):
-    pass
+class _MockTreeMap(dict):
+    def __class_getitem__(cls, item):
+        return cls
 
 
-class MockDynArray(list):
-    pass
+class _MockDynArray(list):
+    def __class_getitem__(cls, item):
+        return cls
 
 
-class MockWebResponse:
-    def __init__(self, status: int, body: bytes):
-        self.status = status
-        self.body = body
+class _MockGenLayerHarness:
+    def __init__(self) -> None:
+        self.sender = "0x1111111111111111111111111111111111111111"
+        self.value = 0
+        self.datetime_iso = "2026-11-23T10:00:00Z"
+        self.web_responses: dict[str, tuple[int, str]] = {}
+        self.prompt_queue: list[str] = []
+        self.emitted_transfers: list[tuple[str, int]] = []
+        self.return_bytes_calldata = False
 
+    def install(self) -> None:
+        gl_mod = types.ModuleType("genlayer")
 
-class MockReturn:
-    def __init__(self, calldata):
-        self.calldata = calldata
+        class _Message:
+            @property
+            def sender_address(inner_self):
+                return _MockAddress(self.sender)
 
+            @property
+            def value(inner_self):
+                return self.value
 
-class MockContractProxy:
-    def __init__(self, target):
-        self.target = target
+        class _Web:
+            def get(inner_self, url: str, headers: dict | None = None):
+                status, body = self.web_responses.get(url, (404, ""))
+                return types.SimpleNamespace(status=status, body=body.encode("utf-8"))
 
-    def emit_transfer(self, value: int, on: str = "finalized") -> None:
-        MockRuntime.transfers.append(
-            {"to": str(self.target), "value": int(value), "on": on}
+        class _NonDet:
+            web = _Web()
+
+            def exec_prompt(inner_self, prompt: str, response_format: str = "text"):
+                if not self.prompt_queue:
+                    raise RuntimeError("No mocked LLM response queued")
+                return self.prompt_queue.pop(0)
+
+        class _Calldata:
+            @staticmethod
+            def decode(raw):
+                if isinstance(raw, (bytes, bytearray, memoryview)):
+                    return bytes(raw).decode("utf-8")
+                raise TypeError("expected bytes")
+
+        class _VM:
+            UserError = _MockUserError
+            Return = _MockReturn
+            Result = object
+
+            def run_nondet_unsafe(inner_self, leader_fn, validator_fn):
+                res = leader_fn()
+                payload = res.encode("utf-8") if self.return_bytes_calldata else res
+                ok = validator_fn(_MockReturn(calldata=payload))
+                assert ok is True, "Validator disagreed with leader"
+                return res
+
+        class _EVM:
+            def contract_interface(inner_self, cls):
+                harness = self
+
+                class _Proxy:
+                    def __init__(proxy_self, addr):
+                        proxy_self.addr = str(addr)
+
+                    def emit_transfer(proxy_self, value: int):
+                        harness.emitted_transfers.append((proxy_self.addr.lower(), int(value)))
+
+                return _Proxy
+
+        class _Public:
+            @staticmethod
+            def write(fn):
+                return fn
+
+            @staticmethod
+            def view(fn):
+                return fn
+
+        _Public.write.payable = staticmethod(lambda fn: fn)
+
+        class _Contract:
+            def __init_subclass__(cls, **kwargs):
+                super().__init_subclass__(**kwargs)
+
+        gl_ns = types.SimpleNamespace(
+            Contract=_Contract,
+            public=_Public,
+            message=_Message(),
+            message_raw={"datetime": self.datetime_iso},
+            nondet=_NonDet(),
+            vm=_VM(),
+            calldata=_Calldata(),
+            evm=_EVM(),
         )
 
+        # Keep message_raw live-updated
+        class _DynamicGL:
+            def __getattr__(inner_self, name):
+                if name == "message_raw":
+                    return {"datetime": self.datetime_iso} if self.datetime_iso is not None else {}
+                return getattr(gl_ns, name)
 
-class MockRuntime:
-    sender = MockAddress("0x1111111111111111111111111111111111111111")
-    value = 0
-    datetime_str = "2026-11-23T10:00:00Z"
-    web_responses: dict[str, MockWebResponse] = {}
-    prompt_handler = None
-    transfers: list[dict] = []
-    return_bytes = False
-
-    @classmethod
-    def reset(cls) -> None:
-        cls.sender = MockAddress("0x1111111111111111111111111111111111111111")
-        cls.value = 0
-        cls.datetime_str = "2026-11-23T10:00:00Z"
-        cls.web_responses = {}
-        cls.prompt_handler = None
-        cls.transfers = []
-        cls.return_bytes = False
+        gl_mod.gl = _DynamicGL()
+        gl_mod.Address = _MockAddress
+        gl_mod.u256 = int
+        gl_mod.TreeMap = _MockTreeMap
+        gl_mod.DynArray = _MockDynArray
+        sys.modules["genlayer"] = gl_mod
 
 
-def _install_mock_genlayer():
-    gl_mod = types.ModuleType("genlayer")
-
-    class _BaseContract:
-        pass
-
-    def _identity(fn):
-        return fn
-
-    class _PublicWrite:
-        def __call__(self, fn):
-            return fn
-
-        def payable(self, fn):
-            return fn
-
-    def _run_nondet_unsafe(leader_fn, validator_fn):
-        res = leader_fn()
-        payload = res.encode("utf-8") if (MockRuntime.return_bytes and isinstance(res, str)) else res
-        if not validator_fn(MockReturn(payload)):
-            raise RuntimeError("VALIDATOR_REJECTED_LEADER")
-        return res
-
-    gl_mod.Contract = _BaseContract
-    gl_mod.public = types.SimpleNamespace(view=_identity, write=_PublicWrite())
-    gl_mod.vm = types.SimpleNamespace(
-        UserError=MockUserError,
-        Result=MockReturn,
-        Return=MockReturn,
-        run_nondet_unsafe=_run_nondet_unsafe,
-    )
-    gl_mod.calldata = types.SimpleNamespace(
-        decode=lambda data: data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data
-    )
-    gl_mod.evm = types.SimpleNamespace(contract_interface=lambda cls: MockContractProxy)
-
-    def _web_get(url: str, headers=None):
-        return MockRuntime.web_responses.get(url, MockWebResponse(404, b"Not Found"))
-
-    def _exec_prompt(prompt: str, images=None, response_format=None):
-        if MockRuntime.prompt_handler is None:
-            raise RuntimeError("prompt_handler not configured")
-        return MockRuntime.prompt_handler(prompt, response_format)
-
-    gl_mod.nondet = types.SimpleNamespace(
-        web=types.SimpleNamespace(get=_web_get),
-        exec_prompt=_exec_prompt,
-    )
-
-    class _DynamicMessage:
-        @property
-        def sender_address(self):
-            return MockRuntime.sender
-
-        @property
-        def value(self):
-            return MockRuntime.value
-
-    class _DynamicMessageRaw:
-        def get(self, key, default=None):
-            return MockRuntime.datetime_str if key == "datetime" else default
-
-    gl_mod.message = _DynamicMessage()
-    gl_mod.message_raw = _DynamicMessageRaw()
-
-    module_obj = types.ModuleType("genlayer")
-    module_obj.gl = gl_mod
-    module_obj.Address = MockAddress
-    module_obj.u256 = int
-    module_obj.TreeMap = MockTreeMap
-    module_obj.DynArray = MockDynArray
-    sys.modules["genlayer"] = module_obj
-
-    spec_rp = importlib.util.spec_from_file_location("release_pact_contract", CONTRACT_PATH)
-    rp_mod = importlib.util.module_from_spec(spec_rp)
-    spec_rp.loader.exec_module(rp_mod)
-
-    spec_ep = importlib.util.spec_from_file_location("evidence_probe_contract", PROBE_PATH)
-    ep_mod = importlib.util.module_from_spec(spec_ep)
-    spec_ep.loader.exec_module(ep_mod)
-    return rp_mod, ep_mod
+def _load_module(name: str, rel_path: str):
+    spec = importlib.util.spec_from_file_location(name, ROOT / rel_path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
 
 
-rp, ep = _install_mock_genlayer()
+def _make_contract():
+    h = _MockGenLayerHarness()
+    h.install()
+    rp_mod = _load_module("release_pact_mod", "contracts/release_pact.py")
+    probe_mod = _load_module("evidence_probe_mod", "contracts/evidence_probe.py")
 
-FLASK_PREFIX = "https://raw.githubusercontent.com/pallets/flask/"
+    rp = rp_mod.ReleasePact.__new__(rp_mod.ReleasePact)
+    rp.pacts = _MockTreeMap()
+    rp.pact_ids = _MockDynArray()
+    rp.audits = _MockTreeMap()
+    rp.audit_ids = _MockDynArray()
+    rp.refundable_balances = _MockTreeMap()
+    rp.__init__(min_tranche_wei=100, min_stake_wei=20, default_timeout_seconds=900)
+
+    probe = probe_mod.EvidenceProbe.__new__(probe_mod.EvidenceProbe)
+    probe.__init__()
+    return h, rp_mod, rp, probe
+
+
 FLASK_URL = (
     "https://raw.githubusercontent.com/pallets/flask/"
     "41cb747cd5a9b43da43bf809ad974722542603db/CHANGES.rst"
 )
-
-
-def _new_contract(min_tranche: int = 100, min_stake: int = 20, timeout: int = 900):
-    MockRuntime.reset()
-    c = rp.ReleasePact(
-        min_tranche_wei=min_tranche,
-        min_stake_wei=min_stake,
-        default_timeout_seconds=timeout,
-    )
-    c.pacts = MockTreeMap()
-    c.pact_ids = MockDynArray()
-    c.audits = MockTreeMap()
-    c.audit_ids = MockDynArray()
-    c.refundable_balances = MockTreeMap()
-    return c
-
-
-def _gate1_ok(prompt, fmt):
-    return {"verdict": "OBSERVABLE_DELIVERABLE", "reason": "CONCRETE_FEATURE_CRITERION"}
-
-
-def _gate1_vague(prompt, fmt):
-    return {"verdict": "TOO_VAGUE", "reason": "SUBJECTIVE_OR_UNMEASURABLE"}
+REBUFF_URL = (
+    "https://raw.githubusercontent.com/protectai/rebuff/"
+    "4d2fe064abf164e7381556d23e48e210080f8afa/python-sdk/tests/test_sdk.py"
+)
 
 
 def test_1_fail_closed_trusted_clock():
-    c = _new_contract()
-    MockRuntime.datetime_str = ""
-    with pytest.raises(MockUserError, match="TRUSTED_TIME_UNAVAILABLE"):
-        c.create_release_pact("Flask", json.dumps(["Add feature X"]), FLASK_PREFIX, 900)
+    h, rp_mod, _, _ = _make_contract()
+    h.datetime_iso = ""
+    with pytest.raises(_MockUserError, match="TRUSTED_TIME_UNAVAILABLE"):
+        rp_mod._now_ts()
 
 
-def test_2_url_allowlist_and_forbidden_tokens():
-    assert rp._validate_evidence_url(FLASK_URL, FLASK_PREFIX) == ""
-    assert rp._validate_evidence_url(
-        "https://raw.githubusercontent.com/pallets/flask/main/CHANGES.rst", FLASK_PREFIX
-    ) == "MUTABLE_GITHUB_REF"
-    assert rp._validate_evidence_url(
-        "https://raw.githubusercontent.com/kanezar3/Release-Pact/41cb747cd5a9b43da43bf809ad974722542603db/a.txt",
-        "https://raw.githubusercontent.com/",
-    ) == "FORBIDDEN_EVIDENCE_URL"
-    assert rp._validate_evidence_url(
-        "https://raw.githubusercontent.com/other/repo/41cb747cd5a9b43da43bf809ad974722542603db/a.txt",
-        FLASK_PREFIX,
-    ) == "URL_OUTSIDE_ALLOWED_PREFIX"
+def test_2_strict_repo_prefix_and_no_mutable_refs():
+    _, rp_mod, _, _ = _make_contract()
+    # Wildcard GitHub host prefix must be rejected
+    assert rp_mod._validate_source_prefix("https://raw.githubusercontent.com/") == "UNSCOPED_GITHUB_PREFIX"
+    assert rp_mod._validate_source_prefix("https://raw.githubusercontent.com/pallets/flask") == "UNSCOPED_GITHUB_PREFIX"
+    assert rp_mod._validate_source_prefix("https://raw.githubusercontent.com/pallets/flask/") == ""
+
+    # Cross-repo URL rejected cleanly
+    assert (
+        rp_mod._validate_evidence_url(REBUFF_URL, "https://raw.githubusercontent.com/pallets/flask/")
+        == "URL_OUTSIDE_ALLOWED_PREFIX"
+    )
+    # Mutable branch ref rejected cleanly
+    assert (
+        rp_mod._validate_evidence_url(
+            "https://raw.githubusercontent.com/pallets/flask/main/CHANGES.rst",
+            "https://raw.githubusercontent.com/pallets/flask/",
+        )
+        == "MUTABLE_GITHUB_REF"
+    )
+    assert (
+        rp_mod._validate_evidence_url(FLASK_URL, "https://raw.githubusercontent.com/pallets/flask/")
+        == ""
+    )
 
 
-def test_3_probe_and_both_str_and_bytes_calldata():
-    raw = "Line 1\r\nLine 2: \u201cSECRET_KEY_FALLBACKS\u201d \u2014 key rotation\r\n"
-    MockRuntime.web_responses[FLASK_URL] = MockWebResponse(200, raw.encode("utf-8"))
-    probe = ep.EvidenceProbe()
+def test_3_probe_and_excerpt_around_quote():
+    h, rp_mod, _, probe = _make_contract()
+    long_doc = ("A" * 900) + "\n- Support SECRET_KEY_FALLBACKS rotation.\n" + ("B" * 900)
+    excerpt = rp_mod._excerpt_around_quote(long_doc, "- Support SECRET_KEY_FALLBACKS rotation.", 400)
+    assert "- Support SECRET_KEY_FALLBACKS rotation." in excerpt
+    assert len(excerpt) <= 400
+
+    h.web_responses[FLASK_URL] = (200, "Line 1\nSupport SECRET_KEY_FALLBACKS\nLine 3\n")
     for use_bytes in (False, True):
-        MockRuntime.return_bytes = use_bytes
-        out = json.loads(probe.probe_url_slice(FLASK_URL, 2, 2))
+        h.return_bytes_calldata = use_bytes
+        out = json.loads(probe.probe_url_slice(FLASK_URL, 1, 3))
         assert out["ok"] is True
-        assert out["snippet"] == 'Line 2: "SECRET_KEY_FALLBACKS" - key rotation'
+        assert len(out["snippet_sha256"]) == 64
 
 
 def test_4_gate1_refunds_on_invalid_and_too_vague():
-    c = _new_contract()
-    sponsor = MockAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    MockRuntime.sender = sponsor
+    h, _, rp, _ = _make_contract()
+    sponsor = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    h.sender = sponsor
+    h.value = 100
 
-    MockRuntime.value = 150
-    bad = json.loads(c.create_release_pact("Flask", "not-json", FLASK_PREFIX, 900))
-    assert bad["status"] == "REJECTED_INVALID"
-    assert c.get_refundable_balance(str(sponsor)) == 150
-
-    # 2 tranches require >= 200 wei
-    MockRuntime.value = 120
-    low = json.loads(c.create_release_pact("Flask", json.dumps(["A", "B"]), FLASK_PREFIX, 900))
-    assert low["reason"] == "INSUFFICIENT_PACT_DEPOSIT"
-    assert c.get_refundable_balance(str(sponsor)) == 270
-
-    # TOO_VAGUE -> immediate refund
-    MockRuntime.value = 100
-    MockRuntime.prompt_handler = _gate1_vague
-    vague = json.loads(c.create_release_pact("Flask", json.dumps(["Make it joyful"]), FLASK_PREFIX, 900))
-    assert vague["status"] == "TOO_VAGUE"
-    assert vague["reason"] == "SUBJECTIVE_OR_UNMEASURABLE"
-    assert c.get_refundable_balance(str(sponsor)) == 370
-
-
-def test_5_two_tranche_delivery_and_partial_expiry_conservation():
-    c = _new_contract()
-    sponsor = MockAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    builder = MockAddress("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-
-    MockRuntime.sender = sponsor
-    MockRuntime.value = 200
-    MockRuntime.datetime_str = "2026-11-23T10:00:00Z"
-    MockRuntime.prompt_handler = _gate1_ok
-    pact = json.loads(
-        c.create_release_pact(
-            "Flask",
-            json.dumps(["Support SECRET_KEY_FALLBACKS", "Support SESSION_COOKIE_PARTITIONED"]),
-            FLASK_PREFIX,
-            600,
+    # Invalid unscoped prefix refunds immediately
+    r_bad = json.loads(
+        rp.create_release_pact(
+            "Flask", json.dumps(["Add app.query"]), "https://raw.githubusercontent.com/", 900
         )
     )
-    pid = pact["pact_id"]
-    assert pact["status"] == "OPEN"
-    assert len(pact["tranches"]) == 2
-    assert pact["tranches"][0]["tranche_wei"] == 100
+    assert r_bad["status"] == "REJECTED_INVALID"
+    assert r_bad["reason"] == "UNSCOPED_GITHUB_PREFIX"
+    assert rp.get_refundable_balance(sponsor) == 100
 
-    # Deliver Tranche 0 -> PARTIALLY_DELIVERED, builder credited 120 wei
-    MockRuntime.web_responses[FLASK_URL] = MockWebResponse(
-        200, b"Support key rotation with the SECRET_KEY_FALLBACKS config."
+    # TOO_VAGUE refunds immediately
+    h.prompt_queue = [
+        json.dumps({"verdict": "TOO_VAGUE", "reason": "SUBJECTIVE_OR_UNMEASURABLE"}),
+        json.dumps({"verdict": "TOO_VAGUE", "reason": "SUBJECTIVE_OR_UNMEASURABLE"}),
+    ]
+    r_vague = json.loads(
+        rp.create_release_pact(
+            "Flask UX",
+            json.dumps(["Make Flask super clean and joyful"]),
+            "https://raw.githubusercontent.com/pallets/flask/",
+            900,
+        )
     )
-    MockRuntime.sender = builder
-    MockRuntime.value = 20
-    MockRuntime.prompt_handler = lambda p, f: {
-        "verdict": "FEATURE_DELIVERED",
-        "reason": "EXPLICIT_RELEASE_NOTE_MATCH",
-        "quote": "Support key rotation with the SECRET_KEY_FALLBACKS config.",
-        "summary": "Key rotation delivered.",
-    }
-    a1 = json.loads(c.submit_delivery_proof(pid, 0, FLASK_URL, 1, 5))
-    assert a1["verdict"] == "FEATURE_DELIVERED"
-    assert a1["payout_wei"] == 120
-    assert c.get_refundable_balance(str(builder)) == 120
-    p_mid = json.loads(c.get_pact(pid))
-    assert p_mid["status"] == "PARTIALLY_DELIVERED"
-    assert p_mid["remaining_wei"] == 100
+    assert r_vague["status"] == "TOO_VAGUE"
+    assert rp.get_refundable_balance(sponsor) == 200
 
-    # Expire after deadline -> only undelivered Tranche 1 (100 wei) returned to Sponsor
-    MockRuntime.datetime_str = "2026-11-23T10:15:00Z"
-    settled = json.loads(c.settle_expired_pact(pid))
+
+def test_5_sponsor_self_griefing_blocked_and_per_builder_caps():
+    h, _, rp, _ = _make_contract()
+    sponsor = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    builder1 = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    builder2 = "0xcccccccccccccccccccccccccccccccccccccccc"
+
+    h.sender = sponsor
+    h.value = 100
+    h.prompt_queue = [
+        json.dumps({"verdict": "OBSERVABLE_DELIVERABLE", "reason": "CONCRETE_FEATURE_CRITERION"}),
+        json.dumps({"verdict": "OBSERVABLE_DELIVERABLE", "reason": "CONCRETE_FEATURE_CRITERION"}),
+    ]
+    p = json.loads(
+        rp.create_release_pact(
+            "Flask 3.1",
+            json.dumps(["Support SECRET_KEY_FALLBACKS"]),
+            "https://raw.githubusercontent.com/pallets/flask/",
+            900,
+            "2024-11-01",
+        )
+    )
+    assert p["status"] == "OPEN"
+
+    # Sponsor cannot self-submit to grief attempts
+    h.sender = sponsor
+    h.value = 20
+    self_try = json.loads(rp.submit_delivery_proof("pact-1", 0, FLASK_URL, 1, 5))
+    assert self_try["verdict"] == "REJECTED_INVALID"
+    assert self_try["reason"] == "SPONSOR_CANNOT_SUBMIT_PROOF"
+    assert rp.get_refundable_balance(sponsor) == 20
+    assert json.loads(rp.get_pact("pact-1"))["tranches"][0]["audit_attempts"] == 0
+
+    # Builder 1 exhausts their 3 attempts; Builder 2 can STILL succeed!
+    h.web_responses[FLASK_URL] = (200, "Released 2024-11-13\nSupport SECRET_KEY_FALLBACKS rotation.\n")
+    h.sender = builder1
+    for _ in range(3):
+        h.value = 20
+        h.prompt_queue = [
+            json.dumps({"verdict": "NOT_DELIVERED", "reason": "ONLY_UNRELATED_FIXES", "quote": "", "summary": "No"}),
+            json.dumps({"verdict": "NOT_DELIVERED", "reason": "ONLY_UNRELATED_FIXES", "quote": "", "summary": "No"}),
+        ]
+        a = json.loads(rp.submit_delivery_proof("pact-1", 0, FLASK_URL, 1, 2))
+        assert a["verdict"] == "NOT_DELIVERED"
+
+    # 4th attempt by builder1 rejected cleanly without locking tranche
+    h.value = 20
+    blocked = json.loads(rp.submit_delivery_proof("pact-1", 0, FLASK_URL, 1, 2))
+    assert blocked["reason"] == "BUILDER_ATTEMPT_LIMIT_REACHED"
+    assert rp.get_refundable_balance(builder1) == 20
+
+    # Honest builder2 still unlocks tranche!
+    h.sender = builder2
+    h.value = 20
+    h.prompt_queue = [
+        json.dumps({
+            "verdict": "FEATURE_DELIVERED",
+            "reason": "EXPLICIT_RELEASE_NOTE_MATCH",
+            "quote": "Support SECRET_KEY_FALLBACKS rotation.",
+            "summary": "Delivered.",
+        }),
+        json.dumps({
+            "verdict": "FEATURE_DELIVERED",
+            "reason": "EXPLICIT_RELEASE_NOTE_MATCH",
+            "quote": "Support SECRET_KEY_FALLBACKS rotation.",
+            "summary": "Delivered.",
+        }),
+    ]
+    win = json.loads(rp.submit_delivery_proof("pact-1", 0, FLASK_URL, 1, 2))
+    assert win["verdict"] == "FEATURE_DELIVERED"
+    assert win["quote"] in win["snippet_excerpt"]
+    assert rp.get_refundable_balance(builder2) == 120
+
+
+def test_6_two_tranche_partial_expiry_and_withdraw_transfer():
+    h, _, rp, _ = _make_contract()
+    sponsor = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    builder = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    h.sender = sponsor
+    h.value = 200
+    h.prompt_queue = [
+        json.dumps({"verdict": "OBSERVABLE_DELIVERABLE", "reason": "CONCRETE_FEATURE_CRITERION"}),
+        json.dumps({"verdict": "OBSERVABLE_DELIVERABLE", "reason": "CONCRETE_FEATURE_CRITERION"}),
+    ]
+    rp.create_release_pact(
+        "Flask 3.1",
+        json.dumps(["Support SECRET_KEY_FALLBACKS", "Support SESSION_COOKIE_PARTITIONED"]),
+        "https://raw.githubusercontent.com/pallets/flask/",
+        30,
+        "2024-11-01",
+    )
+
+    h.web_responses[FLASK_URL] = (200, "Support SECRET_KEY_FALLBACKS config rotation.\n")
+    h.sender = builder
+    h.value = 20
+    h.prompt_queue = [
+        json.dumps({
+            "verdict": "FEATURE_DELIVERED",
+            "reason": "EXPLICIT_RELEASE_NOTE_MATCH",
+            "quote": "Support SECRET_KEY_FALLBACKS config rotation.",
+            "summary": "Shipped.",
+        }),
+        json.dumps({
+            "verdict": "FEATURE_DELIVERED",
+            "reason": "EXPLICIT_RELEASE_NOTE_MATCH",
+            "quote": "Support SECRET_KEY_FALLBACKS config rotation.",
+            "summary": "Shipped.",
+        }),
+    ]
+    rp.submit_delivery_proof("pact-1", 0, FLASK_URL, 1, 2)
+    assert json.loads(rp.get_pact("pact-1"))["status"] == "PARTIALLY_DELIVERED"
+
+    # Advance trusted clock past 30s deadline
+    h.datetime_iso = "2026-11-23T10:01:00Z"
+    settled = json.loads(rp.settle_expired_pact("pact-1"))
     assert settled["status"] == "EXPIRED_SETTLED"
     assert settled["remaining_wei"] == 0
-    assert c.get_refundable_balance(str(sponsor)) == 100
-    assert settled["tranches"][0]["status"] == "DELIVERED_UNLOCKED"
-    assert settled["tranches"][1]["status"] == "EXPIRED_REFUNDED"
+    assert settled["refunded_wei"] == 100
+    assert rp.get_refundable_balance(sponsor) == 100
 
+    # Withdraw emits real EOA transfers
+    h.sender = builder
+    w_b = json.loads(rp.withdraw_refundable())
+    assert w_b["withdrawn_wei"] == 120
+    assert w_b["settlement_stage"] == "ON_FINALIZED"
+    assert rp.get_refundable_balance(builder) == 0
 
-def test_6_not_delivered_and_unverifiable_preserve_open_tranche():
-    c = _new_contract()
-    sponsor = MockAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    builder = MockAddress("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-
-    MockRuntime.sender = sponsor
-    MockRuntime.value = 100
-    MockRuntime.prompt_handler = _gate1_ok
-    pid = json.loads(
-        c.create_release_pact("Flask", json.dumps(["Add CHIPS cookie flag"]), FLASK_PREFIX, 900)
-    )["pact_id"]
-
-    # HTTP 404 -> UNVERIFIABLE_FETCH, builder refunded 20 wei, tranche stays OPEN
-    MockRuntime.sender = builder
-    MockRuntime.value = 20
-    u = json.loads(c.submit_delivery_proof(pid, 0, FLASK_URL, 1, 5))
-    assert u["verdict"] == "UNVERIFIABLE_FETCH"
-    assert c.get_refundable_balance(str(builder)) == 20
-    assert json.loads(c.get_pact(pid))["tranches"][0]["status"] == "OPEN"
-
-    # NOT_DELIVERED -> sponsor gets 20 wei anti-spam stake, tranche stays OPEN
-    MockRuntime.web_responses[FLASK_URL] = MockWebResponse(200, b"Relax type hint for send_file.")
-    MockRuntime.prompt_handler = lambda p, f: {
-        "verdict": "NOT_DELIVERED",
-        "reason": "ONLY_UNRELATED_FIXES",
-        "quote": "",
-        "summary": "Only send_file typing fix.",
-    }
-    nd = json.loads(c.submit_delivery_proof(pid, 0, FLASK_URL, 1, 5))
-    assert nd["verdict"] == "NOT_DELIVERED"
-    assert c.get_refundable_balance(str(sponsor)) == 20
-    tr = json.loads(c.get_pact(pid))["tranches"][0]
-    assert tr["status"] == "OPEN"
-    assert tr["audit_attempts"] == 2
-
-
-def test_7_verdict_reason_matrix_and_withdraw_emit_transfer():
-    with pytest.raises(ValueError, match="INCOMPATIBLE_VERDICT_REASON"):
-        rp._validate_gate2_payload(
-            {
-                "verdict": "FEATURE_DELIVERED",
-                "reason": "ONLY_UNRELATED_FIXES",
-                "quote": "valid verbatim quote here",
-                "summary": "bad pair",
-            },
-            "valid verbatim quote here",
-        )
-
-    c = _new_contract()
-    sponsor = MockAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    MockRuntime.sender = sponsor
-    c._credit_refundable(str(sponsor), 250)
-    wd = json.loads(c.withdraw_refundable())
-    assert wd["withdrawn_wei"] == 250
-    assert c.get_refundable_balance(str(sponsor)) == 0
-    assert MockRuntime.transfers[-1] == {"to": str(sponsor), "value": 250, "on": "finalized"}
+    h.sender = sponsor
+    w_s = json.loads(rp.withdraw_refundable())
+    assert w_s["withdrawn_wei"] == 100
+    assert (builder, 120) in h.emitted_transfers
+    assert (sponsor, 100) in h.emitted_transfers

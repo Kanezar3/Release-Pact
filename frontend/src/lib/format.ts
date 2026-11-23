@@ -1,6 +1,6 @@
 /**
  * Deterministic text normalization, line slicing, WebCrypto SHA-256 verification,
- * and formatting helpers mirroring contracts/release_pact.py byte-for-byte.
+ * inline quote highlighting, and GenLayer Optimistic Democracy stage helpers.
  */
 
 export const MAX_LINE_WINDOW = 120;
@@ -33,6 +33,20 @@ export function sliceSnippet(rawText: string, startLine: number, endLine: number
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   return collapsed.slice(0, MAX_SNIPPET_CHARS);
+}
+
+export function splitExcerptWithQuote(
+  excerpt: string,
+  quote: string
+): { before: string; match: string; after: string } | null {
+  if (!excerpt || !quote) return null;
+  const idx = excerpt.indexOf(quote);
+  if (idx === -1) return null;
+  return {
+    before: excerpt.slice(0, idx),
+    match: excerpt.slice(idx, idx + quote.length),
+    after: excerpt.slice(idx + quote.length),
+  };
 }
 
 export async function sha256Hex(text: string): Promise<string> {
@@ -82,6 +96,7 @@ export function verdictTone(code: string): BadgeTone {
     case 'FULLY_DELIVERED':
     case 'OBSERVABLE_DELIVERABLE':
     case 'FINALIZED':
+    case 'FINALIZED_SUCCESS':
     case 'SUCCESS':
       return {
         bg: 'bg-[#ECFDF5]',
@@ -92,6 +107,7 @@ export function verdictTone(code: string): BadgeTone {
     case 'NOT_DELIVERED':
     case 'TOO_VAGUE':
     case 'REJECTED_INVALID':
+    case 'FINALIZED_ERROR':
     case 'ERROR':
       return {
         bg: 'bg-[#FFF7ED]',
@@ -101,6 +117,7 @@ export function verdictTone(code: string): BadgeTone {
       };
     case 'OPEN':
     case 'PARTIALLY_DELIVERED':
+    case 'ACCEPTED_APPEAL_WINDOW':
       return {
         bg: 'bg-[#EEF2FF]',
         text: 'text-[#3730A3]',
@@ -118,18 +135,38 @@ export function verdictTone(code: string): BadgeTone {
 }
 
 export const PIPELINE_STAGES = [
+  'SUBMITTED',
   'PENDING',
   'PROPOSING',
-  'COMMITTING',
-  'REVEALING',
+  'ACCEPTED · APPEAL',
   'FINALIZED',
 ] as const;
 
 export function consensusStageIndex(status: string): number {
   const upper = (status || '').toUpperCase();
   if (upper.includes('FINAL')) return 4;
-  if (upper.includes('ACCEPT') || upper.includes('REVEAL') || upper.includes('UNDETERMINED')) return 3;
-  if (upper.includes('COMMIT')) return 2;
-  if (upper.includes('PROPOS')) return 1;
+  if (upper.includes('ACCEPT') || upper.includes('APPEAL') || upper.includes('UNDETERMINED')) {
+    return 3;
+  }
+  if (upper.includes('PROPOS') || upper.includes('COMMIT') || upper.includes('REVEAL')) {
+    return 2;
+  }
+  if (upper.includes('PEND')) return 1;
   return 0;
+}
+
+export function classifyTxState(status: string, executionResult: string): string {
+  const st = (status || '').toUpperCase();
+  const ex = (executionResult || '').toUpperCase();
+  if (st.includes('FINAL')) {
+    if (ex && ex !== 'SUCCESS') return 'FINALIZED_ERROR';
+    return 'FINALIZED_SUCCESS';
+  }
+  if (st.includes('ACCEPT') || st.includes('APPEAL')) {
+    return 'ACCEPTED_APPEAL_WINDOW';
+  }
+  if (st.includes('PEND') || st.includes('PROPOS') || st.includes('COMMIT') || st.includes('REVEAL')) {
+    return 'PENDING';
+  }
+  return 'SUBMITTED';
 }

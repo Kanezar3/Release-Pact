@@ -1,4 +1,4 @@
-"""Independent verifier for deploy/proof.json against live GenLayer StudioNet RPC."""
+"""Independent read-only verifier for deploy/proof.json against live GenLayer StudioNet RPC."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def main() -> int:
         exec_res = leaders[0].get("execution_result") if leaders else ""
         ok = status == "FINALIZED" and (not exec_res or exec_res == "SUCCESS")
         tag = "OK  " if ok else "FAIL"
-        print(f"  [{tag}] {name:34s} {h[:14]}... status={status} result={result_name} exec={exec_res}")
+        print(f"  [{tag}] {name:36s} {h[:14]}... status={status} result={result_name} exec={exec_res}")
         if not ok:
             failures += 1
 
@@ -76,25 +76,23 @@ def main() -> int:
     pacts_by_id = {p["pact_id"]: p for p in live_pacts}
     audits_by_id = {a["audit_id"]: a for a in live_audits}
 
+    a1 = audits_by_id.get("audit-1", {})
+    a3 = audits_by_id.get("audit-3", {})
+
     checks = [
         ("EvidenceProbe ok", live_probe.get("ok") is True and len(live_probe.get("snippet_sha256", "")) == 64),
         ("pact-1 FULLY_DELIVERED", pacts_by_id.get("pact-1", {}).get("status") == "FULLY_DELIVERED"),
         ("pact-2 TOO_VAGUE", pacts_by_id.get("pact-2", {}).get("status") == "TOO_VAGUE"),
-        ("pact-3 OPEN (retriable after non-conclusive audits)", pacts_by_id.get("pact-3", {}).get("status") == "OPEN"),
-        ("pact-4 EXPIRED_SETTLED", pacts_by_id.get("pact-4", {}).get("status") == "EXPIRED_SETTLED"),
-        ("audit-1 FEATURE_DELIVERED", audits_by_id.get("audit-1", {}).get("verdict") == "FEATURE_DELIVERED"),
+        ("pact-3 OPEN (strict prefix + anti-grief)", pacts_by_id.get("pact-3", {}).get("status") == "OPEN"),
+        ("pact-4 OPEN (adversarial injection ignored)", pacts_by_id.get("pact-4", {}).get("status") == "OPEN"),
+        ("pact-5 EXPIRED_SETTLED", pacts_by_id.get("pact-5", {}).get("status") == "EXPIRED_SETTLED"),
+        ("audit-1 FEATURE_DELIVERED + quote in excerpt", a1.get("verdict") == "FEATURE_DELIVERED" and a1.get("quote", "") in a1.get("snippet_excerpt", "")),
         ("audit-2 NOT_DELIVERED", audits_by_id.get("audit-2", {}).get("verdict") == "NOT_DELIVERED"),
-        ("audit-3 FEATURE_DELIVERED", audits_by_id.get("audit-3", {}).get("verdict") == "FEATURE_DELIVERED"),
+        ("audit-3 FEATURE_DELIVERED + quote in excerpt", a3.get("verdict") == "FEATURE_DELIVERED" and a3.get("quote", "") in a3.get("snippet_excerpt", "")),
         ("audit-4 UNVERIFIABLE_FETCH", audits_by_id.get("audit-4", {}).get("verdict") == "UNVERIFIABLE_FETCH"),
-        (
-            "audit-5 injection blocked",
-            audits_by_id.get("audit-5", {}).get("verdict") in ("INSUFFICIENT_EVIDENCE", "NOT_DELIVERED"),
-        ),
-        (
-            "audit-6 FORBIDDEN_EVIDENCE_URL",
-            audits_by_id.get("audit-6", {}).get("verdict") == "REJECTED_INVALID"
-            and audits_by_id.get("audit-6", {}).get("reason") == "FORBIDDEN_EVIDENCE_URL",
-        ),
+        ("audit-5 URL_OUTSIDE_ALLOWED_PREFIX", audits_by_id.get("audit-5", {}).get("reason") == "URL_OUTSIDE_ALLOWED_PREFIX"),
+        ("audit-6 SPONSOR_CANNOT_SUBMIT_PROOF", audits_by_id.get("audit-6", {}).get("reason") == "SPONSOR_CANNOT_SUBMIT_PROOF"),
+        ("audit-7 injection blocked", audits_by_id.get("audit-7", {}).get("verdict") in ("INSUFFICIENT_EVIDENCE", "NOT_DELIVERED")),
     ]
     for label, passed in checks:
         print(f"  [{'OK  ' if passed else 'FAIL'}] {label}")

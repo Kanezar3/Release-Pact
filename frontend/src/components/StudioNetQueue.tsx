@@ -1,6 +1,11 @@
-import { ExternalLink, RefreshCw, Database, Trash2 } from 'lucide-react';
+import { ExternalLink, RefreshCw, Database, Trash2, Shield } from 'lucide-react';
 import type { ProofManifest, QueuedTx } from '../types';
-import { consensusStageIndex, PIPELINE_STAGES, shortHash } from '../lib/format';
+import {
+  classifyTxState,
+  consensusStageIndex,
+  PIPELINE_STAGES,
+  shortHash,
+} from '../lib/format';
 import { STUDIONET_EXPLORER_BASE } from '../lib/studionet';
 import { StatusBadge } from './StatusBadge';
 
@@ -29,11 +34,11 @@ export function StudioNetQueue({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="font-display text-base font-semibold text-[#111315]">
-              GenLayer Optimistic Democracy Queue
+              GenLayer Optimistic Democracy &amp; Appeal Window Queue
             </h2>
             <p className="mt-0.5 text-xs text-[#525860]">
-              Tracks live StudioNet transactions every 7 seconds across Proposing → Committing →
-              Revealing → Finalized.
+              Resumable 7-second StudioNet poller tracking Submitted → Pending → Proposing →
+              Accepted (Appeal Window) → Finalized (Success or Error).
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -66,6 +71,16 @@ export function StudioNetQueue({
             )}
           </div>
         </div>
+
+        <div className="mt-3.5 flex items-start gap-2 rounded-md border border-[#C7D2FE] bg-[#EEF2FF]/70 px-3.5 py-2.5 text-xs text-[#312E81]">
+          <Shield className="mt-0.5 h-4 w-4 shrink-0 text-[#3730A3]" />
+          <span>
+            <strong>Native Appeal Window:</strong> Release Pact relies on GenLayer&apos;s native
+            protocol appeal window between <strong>ACCEPTED</strong> and <strong>FINALIZED</strong>{' '}
+            rather than a custom court. External EOA payouts via{' '}
+            <code className="font-mono">emit_transfer</code> settle strictly upon finalization.
+          </span>
+        </div>
       </section>
 
       {queue.length === 0 ? (
@@ -80,6 +95,9 @@ export function StudioNetQueue({
         <div className="space-y-3">
           {queue.map((tx) => {
             const stageIdx = consensusStageIndex(tx.status);
+            const terminalState = classifyTxState(tx.status, tx.executionResult);
+            const isFinalError = terminalState === 'FINALIZED_ERROR';
+
             return (
               <article key={tx.hash} className="ledger-sheet rounded-lg p-4 sm:p-5">
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -106,32 +124,36 @@ export function StudioNetQueue({
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <StatusBadge value={tx.status} compact />
-                    {tx.executionResult && <StatusBadge value={tx.executionResult} compact />}
+                    <StatusBadge value={terminalState} compact />
+                    {tx.resultName && (
+                      <span className="rounded bg-[#F3F3EF] px-2 py-0.5 font-mono text-[10px] text-[#525860]">
+                        {tx.resultName}
+                      </span>
+                    )}
                   </div>
                 </div>
 
-                {/* 5-Stage Consensus Bar */}
+                {/* 5-Stage Consensus & Appeal Window Bar */}
                 <div className="mt-4 grid grid-cols-5 gap-1.5">
                   {PIPELINE_STAGES.map((stage, idx) => {
                     const reached = idx <= stageIdx;
+                    const barColor = !reached
+                      ? 'bg-[#E8E8E4]'
+                      : isFinalError && idx === 4
+                        ? 'bg-[#C2410C]'
+                        : stageIdx === 4
+                          ? 'bg-[#047857]'
+                          : 'bg-[#3730A3]';
+
                     return (
                       <div key={stage} className="space-y-1">
-                        <div
-                          className={`h-1.5 w-full rounded-full ${
-                            reached
-                              ? stageIdx === 4
-                                ? 'bg-[#047857]'
-                                : 'bg-[#3730A3]'
-                              : 'bg-[#E8E8E4]'
-                          }`}
-                        />
+                        <div className={`h-1.5 w-full rounded-full ${barColor}`} />
                         <div
                           className={`truncate font-mono text-[10px] ${
                             reached ? 'font-medium text-[#111315]' : 'text-[#8C929A]'
                           }`}
                         >
-                          {stage}
+                          {idx === 4 && isFinalError ? 'FINALIZED · ERR' : stage}
                         </div>
                       </div>
                     );

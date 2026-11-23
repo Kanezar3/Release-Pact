@@ -1,79 +1,122 @@
 # Release Pact — Architecture & Developer Tutorial
 
-Release Pact is a **Multi-Tranche Open-Source Feature-Release Escrow** built as a GenLayer Intelligent Contract (`contracts/release_pact.py`) paired with a Swiss Release Engineering Ledger web application (`frontend/`). It lets open-source sponsors fund concrete, multi-milestone software deliverables and lets maintainers or contributors unlock proportional GEN tranches automatically by submitting commit-pinned changelog or release-note slices.
+Release Pact is a **Multi-Tranche Open-Source Feature-Release Escrow** built on **GenLayer StudioNet** (`Chain ID 61999`). Sponsors lock GEN across `1..3` ordered feature deliverables bound to a canonical external repository prefix (`https://raw.githubusercontent.com/<owner>/<repo>/`) and an optional `min_release_date` (`YYYY-MM-DD`). Builders submit commit-pinned release-note line slices to unlock proportional GEN tranches under GenLayer Optimistic Democracy, while deterministic Python handles every wei transfer, attempt cap, expiry fallback, and finalization-gated EOA payout.
 
 ---
 
-## 1. The Problem It Solves
-
-Open-source maintenance bounties fail in two predictable ways:
-
-1. **Vague specs cause endless disputes.** A sponsor funds *"Make the router faster and cleaner"*, a contributor submits a PR, and both parties argue for weeks over whether the goal was met.
-2. **All-or-nothing escrow blocks incremental shipping.** A sponsor wants two or three related features in a minor release, but locking everything into a single binary payout means shipping 1 of 2 features unlocks zero funding.
-
-Release Pact solves both with GenLayer's **Optimistic Democracy** and deterministic Python accounting: **"The model judges; plain Python moves money."**
-
----
-
-## 2. Two-Gate Verification Architecture
+## 1. Two-Gate Verification Architecture
 
 ```mermaid
 flowchart LR
-    S[Sponsor locks GEN across 1..3 deliverables] --> G1{Gate 1: Intake Screening}
-    G1 -->|TOO_VAGUE| R1[Immediate refund to Sponsor refundable_balances]
-    G1 -->|OBSERVABLE_DELIVERABLE| P[Pact OPEN with deterministic tranche shares]
-    P --> B[Builder stakes GEN + submits commit-pinned URL & line slice]
-    B --> G2{Gate 2: Independent Fetch & Equivalence Audit}
-    G2 -->|FEATURE_DELIVERED + verbatim quote| U[Unlock tranche_wei + stake_wei to Builder]
-    G2 -->|NOT_DELIVERED / INSUFFICIENT_EVIDENCE| F[Stake to Sponsor; Tranche stays OPEN for retry]
+    S[Sponsor locks GEN across 1..3 deliverables] --> G1{Gate 1: Clarity Intake}
+    G1 -->|TOO_VAGUE / INVALID| R1[Zero-revert refund to Sponsor refundable_balances]
+    G1 -->|OBSERVABLE_DELIVERABLE| P[Pact OPEN with deterministic tranche split]
+    P --> B[Non-sponsor Builder stakes GEN + submits commit-pinned URL & line slice]
+    B --> G2{Gate 2: Re-Fetch + Hash + Verbatim Quote Audit}
+    G2 -->|FEATURE_DELIVERED + quote in snippet| U[Unlock tranche_wei + stake_wei to Builder]
+    G2 -->|NOT_DELIVERED / INSUFFICIENT_EVIDENCE| F[Stake to Sponsor; Tranche stays OPEN up to 3/builder]
     G2 -->|UNVERIFIABLE_FETCH| RF[Stake refunded to Builder; Tranche stays OPEN]
     P -->|Trusted clock >= deadline_ts| EX[settle_expired_pact refunds remaining_wei to Sponsor]
-    U --> W[withdraw_refundable -> real EOA emit_transfer]
+    U --> W[withdraw_refundable -> EOA emit_transfer on finalization]
     R1 --> W
     F --> W
     RF --> W
     EX --> W
 ```
 
-### Gate 1 — Clarity Intake Screening (`create_release_pact`)
+---
 
-Before funds are locked into tranches, validators evaluate whether every requested deliverable is an objective, observable software feature, config flag, API, or bug fix:
+## 2. Enforcing Repository Scope & Anti-Griefing in Python
 
-- `OBSERVABLE_DELIVERABLE` (`CONCRETE_FEATURE_CRITERION`) splits the deposit deterministically across `1..3` ordered tranches and binds the pact to an immutable `allowed_source_prefix` (for example, `https://raw.githubusercontent.com/pallets/flask/`).
-- `TOO_VAGUE` (`SUBJECTIVE_OR_UNMEASURABLE`) rejects subjective goals immediately and credits `100%` of `gl.message.value` to `refundable_balances[sponsor]` with zero revert and zero stranded wei.
+In [`contracts/release_pact.py`](../contracts/release_pact.py), every pact is bound to a repository-scoped upstream prefix so no builder can substitute an unrelated repository or mutable branch (`main`/`master`). Wildcard host prefixes like `https://raw.githubusercontent.com/` are rejected deterministically before consensus:
 
-### Gate 2 — Commit-Pinned Release Proof (`submit_delivery_proof`)
+```python
+def _validate_source_prefix(prefix: str) -> str:
+    clean = prefix.strip()
+    parsed = urlparse(clean)
+    if parsed.scheme != "https" or parsed.netloc.lower() not in ALLOWED_EVIDENCE_HOSTS:
+        return "INVALID_SOURCE_PREFIX"
+    if parsed.netloc.lower() == "raw.githubusercontent.com":
+        parts = [p for p in (parsed.path or "").split("/") if p]
+        if len(parts) < 2 or not clean.endswith("/"):
+            return "UNSCOPED_GITHUB_PREFIX"
+    return ""
+```
 
-When a builder submits a commit-pinned URL (`raw.githubusercontent.com/<owner>/<repo>/<40-hex-sha>/<path>` or Wayback `id_`) with a `start_line..end_line` slice (max 120 lines):
+To prevent a malicious sponsor from self-submitting bogus proofs to freeze a tranche before `deadline_ts`, `submit_delivery_proof` blocks `builder == pact["sponsor"]` (`SPONSOR_CANNOT_SUBMIT_PROOF`) and enforces per-builder attempt limits (`MAX_ATTEMPTS_PER_BUILDER = 3`, `MAX_TOTAL_AUDITS_PER_TRANCHE = 15`) with immediate stake refunds on invalid preflights:
 
-1. **Deterministic Preflight:** Python validates the URL against the pact's bound `allowed_source_prefix`, rejects mutable branches and self-hosted author repos, checks the trusted block timestamp (`gl.message_raw["datetime"]`), and enforces `min_stake_wei`. Any preflight failure records `REJECTED_INVALID` and credits the builder's stake back to `refundable_balances`.
-2. **Independent Re-Fetch & Hash Equivalence:** Inside `gl.vm.run_nondet_unsafe`, both the leader and every validator independently fetch the pinned URL, normalize line endings and typography, extract the exact line slice, compute `snippet_sha256`, and verify hash identity before checking the LLM verdict.
-3. **Anti-Hallucination & Prompt-Injection Hardening:** The evidence excerpt is fenced inside `<untrusted_evidence>...</untrusted_evidence>` with explicit instructions to treat it strictly as inert data. For `FEATURE_DELIVERED`, plain Python asserts that `quote` is at least 12 characters long and appears verbatim inside the fetched snippet, and validates `(verdict, reason)` against `VERDICT_COMPATIBLE_REASONS`.
-4. **Retriable Tranche Settlement:** Only `FEATURE_DELIVERED` transitions a tranche to `DELIVERED_UNLOCKED` and credits `tranche_wei + stake_wei` to the builder. `NOT_DELIVERED`, `INSUFFICIENT_EVIDENCE`, and transient `UNVERIFIABLE_FETCH` keep the tranche `OPEN` (up to `MAX_AUDIT_ATTEMPTS = 5`) so builders can submit corrected release proofs without bricking the pact.
+```python
+if builder == str(pact.get("sponsor", "")):
+    rejection_reason = "SPONSOR_CANNOT_SUBMIT_PROOF"
+elif builder_prior_attempts >= MAX_ATTEMPTS_PER_BUILDER:
+    rejection_reason = "BUILDER_ATTEMPT_LIMIT_REACHED"
+```
 
 ---
 
-## 3. Running Locally
+## 3. Evidence-Hash & Verbatim-Quote Equivalence (`gl.vm.run_nondet_unsafe`)
 
-### Contract Unit Tests (Python)
+Inside Gate 2, the leader and every validator independently fetch the commit-pinned URL, normalize typography and line endings, slice `start_line..end_line`, and compute `snippet_sha256`. Validators reject the leader unless:
+1. Both fetched identical bytes (`l_obj["snippet_sha256"] == snippet_sha256`).
+2. Every `(verdict, reason)` pair is in `VERDICT_COMPATIBLE_REASONS`.
+3. Any `FEATURE_DELIVERED` verdict carries a verbatim `quote` (`>= 12` chars) that exists inside the validator's own fetched `snippet`, and the stored preview window centers around that quote (`_excerpt_around_quote`).
+
+```python
+l_quote = _normalize_text(str(l_obj.get("quote", "")).strip())
+if l_verdict == "FEATURE_DELIVERED":
+    if len(l_quote) < MIN_QUOTE_CHARS or l_quote not in snippet:
+        return False
+
+expected_excerpt = _excerpt_around_quote(snippet, l_quote, MAX_EXCERPT_STORED)
+if str(l_obj.get("snippet_excerpt", "")) != expected_excerpt:
+    return False
+```
+
+---
+
+## 4. Finalization-Gated Native EOA Transfers & Wallet Integration
+
+Chain-layer EOA payouts use GenLayer's `@gl.evm.contract_interface` `emit_transfer`, which executes strictly upon GenLayer finalization (after the native Appeal Window):
+
+```python
+@gl.evm.contract_interface
+class _EoaRecipient:
+    class View:
+        pass
+    class Write:
+        pass
+
+# Inside withdraw_refundable():
+self.refundable_balances[sender] = u256(0)
+_EoaRecipient(gl.message.sender_address).emit_transfer(value=u256(amount))
+```
+
+In the frontend ([`frontend/src/lib/studionet.ts`](../frontend/src/lib/studionet.ts)), `writeStudioNetContract` always awaits `client.initializeConsensusSmartContract()` before dispatching a wallet write so `consensusMainContract` is guaranteed initialized on cold page loads:
+
+```ts
+const client = createClient({
+  chain: studionet,
+  endpoint: STUDIONET_RPC_URL,
+  account: params.account as `0x${string}`,
+  provider: eth as never,
+});
+await client.initializeConsensusSmartContract();
+return String(await client.writeContract({ address, functionName, args, value }));
+```
+
+---
+
+## 5. Running & Verifying Locally
 
 ```bash
+# 1. Run all Python contract unit tests
 python -m pytest tests/test_release_pact.py -v
+
+# 2. Independently verify every StudioNet transaction & live contract invariant
+npm run verify:proof
+
+# 3. Run frontend unit tests, typecheck, and dev server
+npm run test && npm run lint && npm run dev
 ```
 
-### Independent StudioNet Proof Verification
-
-```bash
-python deploy/verify_proof.py
-```
-
-### Frontend Development & Tests
-
-```bash
-cd frontend
-npm install
-npm run test
-npm run dev
-```
-
-Open `http://localhost:5173` to inspect the live **Pact Ledger**, verify browser-side WebCrypto SHA-256 digests against on-chain `snippet_sha256`, connect MetaMask on GenLayer StudioNet (`Chain ID 61999`), and monitor transaction finality in **StudioNet Queue**.
+Open `http://localhost:5173`, click **`Verify Live RPC`** in the top bar to switch from the recorded proof manifest to live StudioNet RPC state, and click **`Verify SHA-256 in Browser`** on `audit-1` or `audit-3` to independently recompute WebCrypto SHA-256 parity with on-chain `snippet_sha256`.

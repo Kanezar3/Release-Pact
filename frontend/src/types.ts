@@ -4,6 +4,7 @@ export interface TrancheRecord {
   tranche_wei: number;
   status: 'OPEN' | 'DELIVERED_UNLOCKED' | 'EXPIRED_REFUNDED' | string;
   audit_attempts: number;
+  builder_attempts?: Record<string, number>;
   winning_audit_id: string;
   builder: string;
 }
@@ -13,6 +14,7 @@ export interface PactRecord {
   sponsor: string;
   project_name: string;
   allowed_source_prefix: string;
+  min_release_date?: string;
   pact_sha256: string;
   total_deposit_wei: number;
   remaining_wei: number;
@@ -67,7 +69,9 @@ export interface ContractConfig {
   min_stake_wei: number;
   default_timeout_seconds: number;
   max_tranches_per_pact: number;
-  max_audit_attempts: number;
+  max_audit_attempts?: number;
+  max_attempts_per_builder?: number;
+  max_total_audits_per_tranche?: number;
   pact_count: number;
   audit_count: number;
 }
@@ -79,6 +83,7 @@ export interface TxMeta {
   result_name: string;
   execution_result: string;
   function?: string;
+  entity_id?: string;
   value_wei?: number;
   account?: string;
   withdrawn_wei?: number;
@@ -90,6 +95,8 @@ export interface TxMeta {
 
 export interface ProofManifest {
   project: string;
+  version?: string;
+  source_commit?: string;
   generated_at_utc: string;
   network: {
     name: string;

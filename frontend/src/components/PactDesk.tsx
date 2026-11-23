@@ -33,6 +33,7 @@ export function PactDesk({ contractAddress, onTxSubmitted }: PactDeskProps) {
   const [sourcePrefix, setSourcePrefix] = useState(
     'https://raw.githubusercontent.com/pallets/flask/'
   );
+  const [minReleaseDate, setMinReleaseDate] = useState('2025-01-01');
   const [timeoutSec, setTimeoutSec] = useState('900');
   const [depositWei, setDepositWei] = useState('100');
 
@@ -45,7 +46,7 @@ export function PactDesk({ contractAddress, onTxSubmitted }: PactDeskProps) {
   const [stakeWei, setStakeWei] = useState('20');
 
   // Settle Expired Pact
-  const [settlePactId, setSettlePactId] = useState('pact-4');
+  const [settlePactId, setSettlePactId] = useState('pact-5');
 
   async function handleConnect() {
     setError('');
@@ -84,6 +85,7 @@ export function PactDesk({ contractAddress, onTxSubmitted }: PactDeskProps) {
         'Add the app.query route decorator for handling the HTTP QUERY method.'
       );
       setSourcePrefix('https://raw.githubusercontent.com/pallets/flask/');
+      setMinReleaseDate('2025-01-01');
       setTimeoutSec('900');
       setDepositWei('100');
     } else if (preset === 'vague') {
@@ -92,6 +94,7 @@ export function PactDesk({ contractAddress, onTxSubmitted }: PactDeskProps) {
         'Make Flask feel dramatically more ergonomic, clean, and joyful for modern developers.'
       );
       setSourcePrefix('https://raw.githubusercontent.com/pallets/flask/');
+      setMinReleaseDate('');
       setTimeoutSec('900');
       setDepositWei('100');
     } else {
@@ -130,7 +133,7 @@ export function PactDesk({ contractAddress, onTxSubmitted }: PactDeskProps) {
         label,
         method: functionName,
         submittedAt: Date.now(),
-        status: 'PENDING',
+        status: 'SUBMITTED',
         resultName: '',
         executionResult: '',
         lastCheckedAt: Date.now(),
@@ -157,7 +160,8 @@ export function PactDesk({ contractAddress, onTxSubmitted }: PactDeskProps) {
             </div>
             <p className="mt-1 text-xs text-[#525860]">
               Network: <code className="font-mono">Chain ID {STUDIONET_CHAIN_ID}</code> · RPC{' '}
-              <code className="font-mono">{STUDIONET_RPC_URL}</code>
+              <code className="font-mono">{STUDIONET_RPC_URL}</code> · Withdrawals execute strictly
+              on GenLayer finalization after the native Appeal Window.
             </p>
           </div>
 
@@ -224,7 +228,7 @@ export function PactDesk({ contractAddress, onTxSubmitted }: PactDeskProps) {
                 1. Create Release Pact
               </h3>
               <p className="text-xs text-[#525860]">
-                Lock GEN across 1–3 concrete deliverables (one per line).
+                Lock GEN across 1–3 concrete deliverables bound to a repo prefix.
               </p>
             </div>
             <div className="flex gap-1.5">
@@ -271,7 +275,7 @@ export function PactDesk({ contractAddress, onTxSubmitted }: PactDeskProps) {
 
             <div>
               <label className="mb-1 block font-medium text-[#525860]">
-                Bound Canonical Source Prefix
+                Bound Canonical Source Prefix (&lt;owner&gt;/&lt;repo&gt;/)
               </label>
               <input
                 type="text"
@@ -281,25 +285,37 @@ export function PactDesk({ contractAddress, onTxSubmitted }: PactDeskProps) {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div>
-                <label className="mb-1 block font-medium text-[#525860]">Timeout (seconds)</label>
+                <label className="mb-1 block font-medium text-[#525860]">
+                  Min Release Date
+                </label>
+                <input
+                  type="text"
+                  placeholder="YYYY-MM-DD"
+                  value={minReleaseDate}
+                  onChange={(e) => setMinReleaseDate(e.target.value)}
+                  className="w-full rounded-md border border-[#E4E4E0] bg-white px-2.5 py-2 font-mono text-xs text-[#111315] focus:border-[#3730A3] focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block font-medium text-[#525860]">Timeout (s)</label>
                 <input
                   type="number"
                   min={15}
                   value={timeoutSec}
                   onChange={(e) => setTimeoutSec(e.target.value)}
-                  className="w-full rounded-md border border-[#E4E4E0] bg-white px-3 py-2 font-mono text-xs text-[#111315] focus:border-[#3730A3] focus:outline-none"
+                  className="w-full rounded-md border border-[#E4E4E0] bg-white px-2.5 py-2 font-mono text-xs text-[#111315] focus:border-[#3730A3] focus:outline-none"
                 />
               </div>
               <div>
-                <label className="mb-1 block font-medium text-[#525860]">Deposit (wei GEN)</label>
+                <label className="mb-1 block font-medium text-[#525860]">Deposit (wei)</label>
                 <input
                   type="number"
                   min={100}
                   value={depositWei}
                   onChange={(e) => setDepositWei(e.target.value)}
-                  className="w-full rounded-md border border-[#E4E4E0] bg-white px-3 py-2 font-mono text-xs text-[#111315] focus:border-[#3730A3] focus:outline-none"
+                  className="w-full rounded-md border border-[#E4E4E0] bg-white px-2.5 py-2 font-mono text-xs text-[#111315] focus:border-[#3730A3] focus:outline-none"
                 />
               </div>
             </div>
@@ -317,7 +333,13 @@ export function PactDesk({ contractAddress, onTxSubmitted }: PactDeskProps) {
                 submitWrite(
                   `create_release_pact (${projectName})`,
                   'create_release_pact',
-                  [projectName, JSON.stringify(lines), sourcePrefix, Number(timeoutSec) || 900],
+                  [
+                    projectName,
+                    JSON.stringify(lines),
+                    sourcePrefix,
+                    Number(timeoutSec) || 900,
+                    minReleaseDate.trim(),
+                  ],
                   BigInt(depositWei || '100')
                 );
               }}
@@ -337,7 +359,7 @@ export function PactDesk({ contractAddress, onTxSubmitted }: PactDeskProps) {
                 2. Submit Delivery Proof
               </h3>
               <p className="text-xs text-[#525860]">
-                Prove a tranche with a commit-pinned changelog line slice.
+                Prove a tranche with a commit-pinned changelog line slice (non-sponsor EOA).
               </p>
             </div>
             <button
@@ -449,7 +471,7 @@ export function PactDesk({ contractAddress, onTxSubmitted }: PactDeskProps) {
                 type="text"
                 value={settlePactId}
                 onChange={(e) => setSettlePactId(e.target.value)}
-                placeholder="pact-4"
+                placeholder="pact-5"
                 className="w-28 rounded-md border border-[#E4E4E0] bg-white px-2.5 py-1.5 font-mono text-xs text-[#111315]"
               />
               <button

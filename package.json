@@ -1,13 +1,14 @@
 {
   "name": "release-pact",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Multi-Tranche Open-Source Feature-Release Escrow & Deterministic Milestone Unlocker on GenLayer StudioNet",
   "scripts": {
     "dev": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build",
     "test": "npm --prefix frontend run test",
     "lint": "npm --prefix frontend run lint",
-    "preview": "npm --prefix frontend run preview"
+    "preview": "npm --prefix frontend run preview",
+    "verify:proof": "python deploy/verify_proof.py"
   }
 }
